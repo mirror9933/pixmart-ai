@@ -1,0 +1,44 @@
+{
+  "name": "pixmart-ai",
+  "version": "1.0.0",
+  "description": "An AI-powered image processing application",
+  "main": "./out/main/index.js",
+  "author": "pixmart-ai",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "build:win": "electron-vite build && electron-builder --win",
+    "build:mac": "electron-vite build && electron-builder --mac",
+    "preview": "electron-vite preview"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "electron-store": "^8.2.0",
+    "lucide-react": "^0.378.0",
+    "openai": "^4.47.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.23.0",
+    "sharp": "^0.33.4",
+    "sql.js": "^1.14.1",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.19",
+    "electron": "^35.7.4",
+    "electron-builder": "^24.13.3",
+    "electron-vite": "^2.2.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  },
+  "allowScripts": {
+    "electron@35.7.4": true
+  }
+}

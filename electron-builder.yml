@@ -1,0 +1,53 @@
+# Electron Builder 打包配置（PixMart AI）
+# 打包：
+#   Windows（需在 Windows 上执行）: npm run build:win
+#   macOS（需在 macOS 上执行）:     npm run build:mac
+
+appId: com.pixmart.ai
+productName: PixMart AI
+
+directories:
+  output: dist
+  buildResources: .
+
+# 只打包构建产物 + package.json（node_modules 中的生产依赖由 electron-builder 自动包含）
+files:
+  - out/**
+  - package.json
+
+asar: true
+
+# sharp 等原生依赖未被代码引用，跳过重编译避免失败
+npmRebuild: false
+
+mac:
+  icon: pixmart-logo.icns
+  category: public.app-category.graphics-design
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  # 本地测试禁用签名；正式分发请配置证书后移除 identity: null
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+win:
+  icon: pixmart-logo.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: PixMart AI
