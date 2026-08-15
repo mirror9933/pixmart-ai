@@ -50,6 +50,13 @@ pnpm-debug.log*
 *.sqlite
 *.sqlite3
 
+# TypeScript build info
+*.tsbuildinfo
+
+# Temp / backup artifacts
+*.tmp
+pixmart-backup-*
+
 # Cache
 .cache/
 .parcel-cache/

@@ -1,14 +1,20 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { ImagePlus, Sparkles, Wand2, Plus, Zap, Eye, X } from 'lucide-react'
+import { ImagePlus, Sparkles, Wand2, Plus, Zap, Eye, X, RefreshCw } from 'lucide-react'
 import StepIndicator from '@/components/shared/StepIndicator'
 import AiWriteModal from '@/components/shared/AiWriteModal'
+import ErrorModal from '@/components/shared/ErrorModal'
+import ModuleSelector from '@/components/shared/ModuleSelector'
+import type { CustomModuleData } from '@/components/shared/CustomModuleModal'
 import Button from '@/components/ui/Button'
 import Select from '@/components/ui/Select'
+import SearchableSelect from '@/components/ui/SearchableSelect'
 import Textarea from '@/components/ui/Textarea'
-import Toggle from '@/components/ui/Toggle'
 import UploadArea, { type UploadedFile } from '@/components/ui/UploadArea'
 import { useModelOptions } from '@/hooks/useModelOptions'
+import { MAIN_MODULE_TYPES } from '@/constants/mainModules'
+import { DETAIL_MODULE_TYPES } from '@/constants/detailModules'
+import { MAIN_DETAIL_SIZE_OPTIONS, PLATFORM_OPTIONS } from '@/constants/sizeOptions'
 
 const tabs = ['主图', '详情图', '广告图'] as const
 type Tab = (typeof tabs)[number]
@@ -18,49 +24,6 @@ const adTypes = ['电商广告', '社交媒体', '活动海报'] as const
 // Platform-specific image sizes (based on 2026 e-commerce size standards)
 // Format: { value, label, type: 'main'|'detail'|'ad' }
 interface SizeOption { value: string; label: string; type: 'main' | 'detail' | 'ad' }
-
-const platformSizeMap: Record<string, SizeOption[]> = {
-  taobao: [
-    { value: '1:1_1200x1200', label: '1:1(1200×1200)最佳', type: 'main' },
-    { value: '1:1_800x800', label: '1:1(800×800)基础', type: 'main' },
-    { value: '3:4_750x1000', label: '3:4(750×1000)移动端详情', type: 'detail' },
-    { value: '3:4_790x1053', label: '3:4(790×1053)PC端详情', type: 'detail' },
-    { value: '2:3_800x1200', label: '2:3(800×1200)直播封面', type: 'ad' },
-  ],
-  tmall: [
-    { value: '1:1_1200x1200', label: '1:1(1200×1200)最佳', type: 'main' },
-    { value: '1:1_800x800', label: '1:1(800×800)基础', type: 'main' },
-    { value: '3:4_750x1000', label: '3:4(750×1000)移动端详情', type: 'detail' },
-    { value: '3:4_790x1053', label: '3:4(790×1053)PC端详情', type: 'detail' },
-    { value: '2:3_800x1200', label: '2:3(800×1200)直播封面', type: 'ad' },
-    { value: '16:9_1200x675', label: '16:9(1200×675)店招/横幅', type: 'ad' },
-  ],
-  jd: [
-    { value: '1:1_1200x1200', label: '1:1(1200×1200)最佳', type: 'main' },
-    { value: '1:1_800x800', label: '1:1(800×800)基础', type: 'main' },
-    { value: '3:4_750x1000', label: '3:4(750×1000)移动端详情', type: 'detail' },
-    { value: '3:4_790x1053', label: '3:4(790×1053)PC端详情', type: 'detail' },
-    { value: '2:3_800x1200', label: '2:3(800×1200)快车推广', type: 'ad' },
-  ],
-  pinduoduo: [
-    { value: '1:1_750x750', label: '1:1(750×750)方图', type: 'main' },
-    { value: '21:10_750x352', label: '~2.1:1(750×352)长图', type: 'ad' },
-    { value: '3:4_750x1000', label: '3:4(750×1000)移动端详情', type: 'detail' },
-  ],
-  douyin: [
-    { value: '9:16_720x1280', label: '9:16(720×1280)标准竖版', type: 'main' },
-    { value: '3:4_1080x1440', label: '3:4(1080×1440)详情图', type: 'detail' },
-    { value: '9:16_1080x1920', label: '9:16(1080×1920)高清', type: 'ad' },
-  ],
-  xiaohongshu: [
-    { value: '3:4_1080x1440', label: '3:4(1080×1440)封面', type: 'main' },
-    { value: '3:4_1242x1660', label: '3:4(1242×1660)笔记图', type: 'detail' },
-  ],
-  kuaishou: [
-    { value: '9:16_720x1280', label: '9:16(720×1280)标准', type: 'main' },
-    { value: '9:16_1080x1920', label: '9:16(1080×1920)高清', type: 'ad' },
-  ],
-}
 
 const adSizeOptions: SizeOption[] = [
   { value: '1:1', label: '1:1 正方形', type: 'ad' },
@@ -75,12 +38,27 @@ const adSizeOptions: SizeOption[] = [
   { value: '21:9', label: '21:9 超宽屏', type: 'ad' },
 ]
 
-function getSizeOptions(platform: string, activeTab: string): { value: string; label: string }[] {
+function getSizeOptions(_platform: string, activeTab: string): { value: string; label: string }[] {
   if (activeTab === '广告图') return adSizeOptions.map(({ value, label }) => ({ value, label }))
-  const all = platformSizeMap[platform] || platformSizeMap.taobao
-  const type: 'main' | 'detail' = activeTab === '主图' ? 'main' : 'detail'
-  const filtered = all.filter(s => s.type === type)
-  return filtered.length > 0 ? filtered.map(({ value, label }) => ({ value, label })) : all.map(({ value, label }) => ({ value, label }))
+  // 主图/详情图:统一尺寸选项,不按平台分类
+  return MAIN_DETAIL_SIZE_OPTIONS
+}
+
+/** 表单初始值(重置用) */
+const emptyMainForm = {
+  platform: '', description: '', language: '',
+  textModel: '', imageModel: '',
+  size: '', quality: '', quantity: ''
+}
+const emptyDetailForm = {
+  platform: '', requirement: '', language: '',
+  textModel: '', imageModel: '',
+  size: '', quality: '', quantity: ''
+}
+const emptyAdForm = {
+  platform: '', description: '', language: '',
+  textModel: '', imageModel: '',
+  size: '', quality: '', quantity: ''
 }
 
 export default function ProductImages() {
@@ -92,10 +70,21 @@ export default function ProductImages() {
   const [analyzeError, setAnalyzeError] = useState('')
   const [aiModalOpen, setAiModalOpen] = useState(false)
   const [aiModalTarget, setAiModalTarget] = useState<'main' | 'detail' | 'ad'>('main')
-  const [detailModule, setDetailModule] = useState(false)
   const [adType, setAdType] = useState<string>('电商广告')
   const [productImages, setProductImages] = useState<UploadedFile[]>([])
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  // 主图模块选择:key -> 生成数量(选中即存在;默认全部各 1 张)
+  const [mainModules, setMainModules] = useState<Record<string, number>>(
+    Object.fromEntries(MAIN_MODULE_TYPES.map(m => [m.key, 1]))
+  )
+  // 主图完整模块列表(内置含用户覆盖 + 自定义,由 ModuleSelector 通知,用于规划页)
+  const [mainModuleList, setMainModuleList] = useState<CustomModuleData[]>(MAIN_MODULE_TYPES)
+  // 详情图模块选择(默认全部各 1 张)
+  const [detailModules, setDetailModules] = useState<Record<string, number>>(
+    Object.fromEntries(DETAIL_MODULE_TYPES.map(m => [m.key, 1]))
+  )
+  // 详情图完整模块列表
+  const [detailModuleList, setDetailModuleList] = useState<CustomModuleData[]>(DETAIL_MODULE_TYPES)
 
   const [mainForm, setMainForm] = useState({
     platform: '',
@@ -130,38 +119,123 @@ export default function ProductImages() {
     quantity: ''
   })
 
-  // Restore temporary form state when returning from the plan step
+  // 挂载时恢复临时保存的表单/模块/图片(重新打开页面不丢输入);
+  // 文案模型/生图模型优先用临时值,没有则用上次使用的(last_models)
   useEffect(() => {
     (async () => {
-      if (!location.state?.restore) return
       try {
-        const state = await window.api.files.loadTempState('productImages')
-        if (!state) return
-        if (state.activeTab) setActiveTab(state.activeTab)
-        if (typeof state.detailModule === 'boolean') setDetailModule(state.detailModule)
-        if (state.adType) setAdType(state.adType)
-        if (state.mainForm) {
-          // Validate size: if the saved value is no longer valid for the platform, reset it
-          const opts = getSizeOptions(state.mainForm.platform || 'taobao', state.activeTab || '主图')
-          const valid = opts.some(o => o.value === state.mainForm.size)
-          setMainForm(valid ? state.mainForm : { ...state.mainForm, size: opts[0]?.value || '' })
+        const [state, lastModelsRaw] = await Promise.all([
+          window.api.files.loadTempState('productImages'),
+          window.api.settings.get('last_models')
+        ])
+        let lastModels: any = {}
+        try { lastModels = lastModelsRaw ? JSON.parse(lastModelsRaw) : {} } catch {}
+
+        if (state && typeof state === 'object') {
+          if (typeof state.activeTab === 'string') setActiveTab(state.activeTab)
+          if (state.adType) setAdType(state.adType)
+          if (state.mainForm) {
+            // Validate size: if the saved value is no longer valid for the platform, reset it
+            const opts = getSizeOptions(state.mainForm.platform || 'taobao', state.activeTab || '主图')
+            const valid = opts.some(o => o.value === state.mainForm.size)
+            setMainForm({
+              ...(valid ? state.mainForm : { ...state.mainForm, size: opts[0]?.value || '' }),
+              textModel: state.mainForm.textModel || lastModels.main?.textModel || '',
+              imageModel: state.mainForm.imageModel || lastModels.main?.imageModel || ''
+            })
+          } else {
+            setMainForm((f) => ({ ...f, textModel: lastModels.main?.textModel || '', imageModel: lastModels.main?.imageModel || '' }))
+          }
+          if (state.detailForm) {
+            const opts = getSizeOptions(state.detailForm.platform || 'taobao', state.activeTab || '主图')
+            const valid = opts.some(o => o.value === state.detailForm.size)
+            setDetailForm({
+              ...(valid ? state.detailForm : { ...state.detailForm, size: opts[0]?.value || '' }),
+              textModel: state.detailForm.textModel || lastModels.detail?.textModel || '',
+              imageModel: state.detailForm.imageModel || lastModels.detail?.imageModel || ''
+            })
+          } else {
+            setDetailForm((f) => ({ ...f, textModel: lastModels.detail?.textModel || '', imageModel: lastModels.detail?.imageModel || '' }))
+          }
+          if (state.adForm) {
+            const opts = getSizeOptions(state.adForm.platform || 'taobao', state.activeTab || '主图')
+            const valid = opts.some(o => o.value === state.adForm.size)
+            setAdForm({
+              ...(valid ? state.adForm : { ...state.adForm, size: opts[0]?.value || '' }),
+              textModel: state.adForm.textModel || lastModels.ad?.textModel || '',
+              imageModel: state.adForm.imageModel || lastModels.ad?.imageModel || ''
+            })
+          } else {
+            setAdForm((f) => ({ ...f, textModel: lastModels.ad?.textModel || '', imageModel: lastModels.ad?.imageModel || '' }))
+          }
+          if (state.productImages?.length) setProductImages(state.productImages)
+          if (state.mainModules) setMainModules(state.mainModules)
+          if (state.detailModules) setDetailModules(state.detailModules)
+        } else {
+          // 无临时状态:默认填上次使用的模型
+          setMainForm((f) => ({ ...f, textModel: lastModels.main?.textModel || '', imageModel: lastModels.main?.imageModel || '' }))
+          setDetailForm((f) => ({ ...f, textModel: lastModels.detail?.textModel || '', imageModel: lastModels.detail?.imageModel || '' }))
+          setAdForm((f) => ({ ...f, textModel: lastModels.ad?.textModel || '', imageModel: lastModels.ad?.imageModel || '' }))
         }
-        if (state.detailForm) {
-          const opts = getSizeOptions(state.detailForm.platform || 'taobao', state.activeTab || '主图')
-          const valid = opts.some(o => o.value === state.detailForm.size)
-          setDetailForm(valid ? state.detailForm : { ...state.detailForm, size: opts[0]?.value || '' })
-        }
-        if (state.adForm) {
-          const opts = getSizeOptions(state.adForm.platform || 'taobao', state.activeTab || '主图')
-          const valid = opts.some(o => o.value === state.adForm.size)
-          setAdForm(valid ? state.adForm : { ...state.adForm, size: opts[0]?.value || '' })
-        }
-        if (state.productImages?.length) setProductImages(state.productImages)
       } catch {}
     })()
-  }, [location.state?.restore])
+  }, [])
+
+  // 表单输入实时自动保存(500ms 防抖):重新打开页面可恢复;模型选择单独持久化到 last_models
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const models = {
+        main: { textModel: mainForm.textModel, imageModel: mainForm.imageModel },
+        detail: { textModel: detailForm.textModel, imageModel: detailForm.imageModel },
+        ad: { textModel: adForm.textModel, imageModel: adForm.imageModel }
+      }
+      window.api.settings.set('last_models', JSON.stringify(models)).catch(() => {})
+      window.api.files.saveTempState('productImages', {
+        activeTab,
+        adType,
+        mainForm,
+        detailForm,
+        adForm,
+        mainModules,
+        detailModules,
+        productImages: productImages.map(img => ({
+          path: img.path, name: img.name, size: img.size, dataUrl: img.dataUrl
+        }))
+      }).catch(() => {})
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [mainForm, detailForm, adForm, mainModules, detailModules, productImages, activeTab, adType])
+
+  /** 刷新按钮:重置表单(清空输入),但保留文案模型/生图模型为上次使用的 */
+  const handleResetForm = async () => {
+    if (!window.confirm('确定要重置当前表单吗？输入的内容将清空（文案模型和生图模型会保留上次使用的）。')) return
+    let lastModels: any = {}
+    try {
+      const raw = await window.api.settings.get('last_models')
+      if (raw) lastModels = JSON.parse(raw)
+    } catch {}
+    setActiveTab('主图')
+    setAdType('电商广告')
+    setMainForm({ ...emptyMainForm, textModel: lastModels.main?.textModel || '', imageModel: lastModels.main?.imageModel || '' })
+    setDetailForm({ ...emptyDetailForm, textModel: lastModels.detail?.textModel || '', imageModel: lastModels.detail?.imageModel || '' })
+    setAdForm({ ...emptyAdForm, textModel: lastModels.ad?.textModel || '', imageModel: lastModels.ad?.imageModel || '' })
+    setMainModules(Object.fromEntries(MAIN_MODULE_TYPES.map(m => [m.key, 1])))
+    setDetailModules(Object.fromEntries(DETAIL_MODULE_TYPES.map(m => [m.key, 1])))
+    setProductImages([])
+    // 清空已保存的临时状态,避免下次打开恢复旧值
+    try { await window.api.files.saveTempState('productImages', {}) } catch {}
+  }
+
+  // 错误弹窗(模型校验 / 分析失败 / 模型不支持识图等)
+  const [errorModal, setErrorModal] = useState<{ title?: string; message: string } | null>(null)
 
   const handleAiWrite = (target: 'main' | 'detail' | 'ad') => {
+    // 模型必选校验:AI 帮写需要文案模型
+    const model = target === 'main' ? mainForm.textModel : target === 'detail' ? detailForm.textModel : adForm.textModel
+    if (!model) {
+      setErrorModal({ title: '请先选择模型', message: '使用 AI 帮写前，请先在「文案模型」中选择一个模型。' })
+      return
+    }
     setAiModalTarget(target)
     setAiModalOpen(true)
   }
@@ -187,8 +261,33 @@ export default function ProductImages() {
     setAiModalOpen(false)
   }
 
+  // AI 帮写参考的目标平台:按目标 Tab 取对应表单的平台(转为中文标签)
+  const currentAiPlatform = aiModalTarget === 'main' ? mainForm.platform
+    : aiModalTarget === 'detail' ? detailForm.platform
+    : adForm.platform
+  const currentAiPlatformLabel = currentAiPlatform
+    ? (PLATFORM_OPTIONS.find(p => p.value === currentAiPlatform)?.label || currentAiPlatform)
+    : ''
+
   const handleAnalyze = async () => {
     if (isAnalyzing) return
+    const isModuleTab = activeTab === '主图' || activeTab === '详情图'
+    const currentModules = activeTab === '主图' ? mainModules : detailModules
+    const checkForm = activeTab === '主图' ? mainForm : activeTab === '详情图' ? detailForm : adForm
+    if (isModuleTab && Object.keys(currentModules).length === 0) {
+      setAnalyzeError('请至少选择一个模块')
+      return
+    }
+    // 模型必选校验:产品分析(识图)需要文案模型
+    if (!checkForm.textModel) {
+      setAnalyzeError('请先选择文案模型')
+      setErrorModal({
+        title: '请先选择模型',
+        message: '产品分析需要 AI 识别产品图片。请先在「文案模型」中选择一个支持识图的模型。'
+      })
+      return
+    }
+    setAnalyzeError('')
     setIsAnalyzing(true)
     try {
       // Convert blob URLs to base64 for IPC transport
@@ -224,7 +323,7 @@ export default function ProductImages() {
         projectId: project.id,
         images: imageUrls,
         description: info,
-        model: mainForm.textModel
+        model: checkForm.textModel
       })
 
       // Get current tab's form data
@@ -234,23 +333,11 @@ export default function ProductImages() {
       const sizeLabel = getSizeOptions(currentForm.platform || 'taobao', activeTab)
         .find(o => o.value === currentForm.size)?.label || ''
 
-      // Save temporary state so "返回上一步" can restore the form
-      try {
-        await window.api.files.saveTempState('productImages', {
-          activeTab,
-          detailModule,
-          adType,
-          mainForm,
-          detailForm,
-          adForm,
-          productImages: productImages.map(img => ({
-            path: img.path,
-            name: img.name,
-            size: img.size,
-            dataUrl: img.dataUrl
-          }))
-        })
-      } catch {}
+      // 主图/详情图:生成数量 = 所选模块的数量之和,规划按模块展开
+      const isModuleTab = activeTab === '主图' || activeTab === '详情图'
+      const currentModules = activeTab === '主图' ? mainModules : detailModules
+      const currentModuleList = activeTab === '主图' ? mainModuleList : detailModuleList
+      const moduleTotal = Object.values(currentModules).reduce((a, b) => a + b, 0)
 
       navigate('/confirm-plan', {
         state: {
@@ -263,8 +350,12 @@ export default function ProductImages() {
           size: currentForm.size,
           sizeLabel,
           quality: currentForm.quality,
-          quantity: parseInt(currentForm.quantity) || 1,
+          quantity: isModuleTab ? (moduleTotal || 1) : (parseInt(currentForm.quantity) || 1),
           activeTab,
+          // 模块选择(内置 + 自定义 -> 数量),规划确认页按此展开
+          mainModules: isModuleTab ? currentModules : null,
+          // 完整模块定义(内置已应用用户提示词覆盖 + 自定义),供规划页使用实际提示词
+          moduleTypes: isModuleTab ? currentModuleList : [],
           // 生成时保持产品主体一致性：参考图（已转 base64）+ 分析得到的产品主体特征描述
           referenceImages: imageUrls,
           productProfile: result.productProfile || '',
@@ -272,7 +363,12 @@ export default function ProductImages() {
         }
       })
     } catch (err: any) {
-      setAnalyzeError(err?.message || '分析失败，请重试')
+      const msg = err?.message || '分析失败，请重试'
+      setAnalyzeError(msg)
+      setErrorModal({
+        title: '产品分析失败',
+        message: `${msg}\n\n如果模型不支持图片识别（识图），请更换「文案模型」后重试。`
+      })
     } finally {
       setIsAnalyzing(false)
     }
@@ -307,38 +403,72 @@ export default function ProductImages() {
           borderRadius: 'var(--radius-lg)',
           padding: '20px'
         }}>
+          {/* 批量任务入口:仅主图/详情图显示(广告图不支持批量);右侧为刷新(重置表单)按钮 */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'space-between',
             marginBottom: '16px'
           }}>
-            <Link
-              to="/batch-tasks"
+            {activeTab !== '广告图' && (
+              <Link
+                to="/batch-tasks"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 16px',
+                  borderRadius: 'var(--radius-md)',
+                  fontSize: '14px',
+                  fontWeight: 400,
+                  color: 'var(--fg-muted)',
+                  backgroundColor: 'transparent',
+                  textDecoration: 'none',
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--brand)'
+                  e.currentTarget.style.backgroundColor = 'var(--brand-glow)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--fg-muted)'
+                  e.currentTarget.style.backgroundColor = 'transparent'
+                }}
+              >
+                <Plus size={14} />
+                批量任务
+              </Link>
+            )}
+            <button
+              onClick={handleResetForm}
+              title="重置当前表单（保留上次使用的模型）"
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: '6px',
-                padding: '8px 16px',
+                gap: '4px',
+                padding: '6px 12px',
                 borderRadius: 'var(--radius-md)',
-                fontSize: '14px',
-                fontWeight: 400,
+                fontSize: '12px',
+                fontWeight: 500,
                 color: 'var(--fg-muted)',
                 backgroundColor: 'transparent',
-                textDecoration: 'none',
-                transition: 'all 0.2s ease',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                marginLeft: 'auto',
+                transition: 'all 0.2s ease'
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.color = 'var(--brand)'
-                e.currentTarget.style.backgroundColor = 'var(--brand-glow)'
+                e.currentTarget.style.borderColor = 'var(--brand)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.color = 'var(--fg-muted)'
-                e.currentTarget.style.backgroundColor = 'transparent'
+                e.currentTarget.style.borderColor = 'var(--border)'
               }}
             >
-              <Plus size={14} />
-              批量任务
-            </Link>
+              <RefreshCw size={13} />
+              刷新
+            </button>
           </div>
 
           <div style={{ marginBottom: '16px' }}>
@@ -464,15 +594,7 @@ export default function ProductImages() {
                     platform: v,
                     size: getSizeOptions(v, activeTab)[0]?.value || f.size
                   }))}
-                  options={[
-                    { value: 'taobao', label: '淘宝' },
-                    { value: 'tmall', label: '天猫' },
-                    { value: 'jd', label: '京东' },
-                    { value: 'pinduoduo', label: '拼多多' },
-                    { value: 'douyin', label: '抖音' },
-                    { value: 'xiaohongshu', label: '小红书' },
-                    { value: 'kuaishou', label: '快手' }
-                  ]}
+                  options={PLATFORM_OPTIONS}
                   placeholder="选择目标平台"
                 />
               </div>
@@ -482,7 +604,7 @@ export default function ProductImages() {
                   <Textarea
                     value={mainForm.description}
                     onChange={(v) => setMainForm((f) => ({ ...f, description: v }))}
-                    placeholder="描述您的产品特征、材质、风格..."
+                    placeholder="建议输入：产品名称、卖点、目标人群、目标电商平台、图片风格等"
                     rows={3}
                   />
                   <button
@@ -511,7 +633,7 @@ export default function ProductImages() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div>
                   <label style={labelStyle}>文案模型</label>
-                  <Select
+                  <SearchableSelect
                     value={mainForm.textModel}
                     onChange={(v) => setMainForm((f) => ({ ...f, textModel: v }))}
                     options={textModelOptions}
@@ -520,7 +642,7 @@ export default function ProductImages() {
                 </div>
                 <div>
                   <label style={labelStyle}>生图模型</label>
-                  <Select
+                  <SearchableSelect
                     value={mainForm.imageModel}
                     onChange={(v) => setMainForm((f) => ({ ...f, imageModel: v }))}
                     options={imageModelOptions}
@@ -528,7 +650,7 @@ export default function ProductImages() {
                   />
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div>
                   <label style={labelStyle}>图片尺寸</label>
                   <Select
@@ -552,21 +674,27 @@ export default function ProductImages() {
                     placeholder="选择质量"
                   />
                 </div>
-                <div>
-                  <label style={labelStyle}>生成数量</label>
-                  <Select
-                    value={mainForm.quantity}
-                    onChange={(v) => setMainForm((f) => ({ ...f, quantity: v }))}
-                    options={[
-                      { value: '1', label: '1 张' },
-                      { value: '2', label: '2 张' },
-                      { value: '4', label: '4 张' },
-                      { value: '6', label: '6 张' }
-                    ]}
-                    placeholder="选择数量"
-                  />
-                </div>
               </div>
+
+              {/* 主图模块选择:勾选模块并设置各模块生成数量 */}
+              <ModuleSelector
+                baseModules={MAIN_MODULE_TYPES}
+                storageKey="main_custom_modules"
+                overrideKey="main_module_overrides"
+                value={mainModules}
+                onChange={setMainModules}
+                onModuleListChange={setMainModuleList}
+              />
+
+              {analyzeError && (
+                <div style={{
+                  fontSize: '12px',
+                  color: 'var(--danger)',
+                  textAlign: 'center'
+                }}>
+                  {analyzeError}
+                </div>
+              )}
               <Button variant="primary" onClick={handleAnalyze} disabled={isAnalyzing} style={{
                 width: '100%',
                 marginTop: '4px',
@@ -592,15 +720,7 @@ export default function ProductImages() {
                     platform: v,
                     size: getSizeOptions(v, activeTab)[0]?.value || f.size
                   }))}
-                  options={[
-                    { value: 'taobao', label: '淘宝' },
-                    { value: 'tmall', label: '天猫' },
-                    { value: 'jd', label: '京东' },
-                    { value: 'pinduoduo', label: '拼多多' },
-                    { value: 'douyin', label: '抖音' },
-                    { value: 'xiaohongshu', label: '小红书' },
-                    { value: 'kuaishou', label: '快手' }
-                  ]}
+                  options={PLATFORM_OPTIONS}
                   placeholder="选择目标平台"
                 />
               </div>
@@ -610,7 +730,7 @@ export default function ProductImages() {
                   <Textarea
                     value={detailForm.requirement}
                     onChange={(v) => setDetailForm((f) => ({ ...f, requirement: v }))}
-                    placeholder="描述详情图的具体要求、展示角度..."
+                    placeholder="建议输入：产品名称、卖点、目标人群、目标电商平台、图片风格等"
                     rows={3}
                   />
                   <button
@@ -621,27 +741,6 @@ export default function ProductImages() {
                     AI帮写
                   </button>
                 </div>
-              </div>
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '10px 12px',
-                background: 'var(--bg-muted)',
-                borderRadius: 'var(--radius-md)'
-              }}>
-                <div>
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg-secondary)' }}>
-                    智能模块
-                  </span>
-                  <span style={{ fontSize: '11px', color: 'var(--fg-muted)', marginLeft: '8px' }}>
-                    {detailModule ? '自定义模块' : '智能模块'}
-                  </span>
-                </div>
-                <Toggle
-                  checked={detailModule}
-                  onChange={setDetailModule}
-                />
               </div>
               <div>
                 <label style={labelStyle}>目标语言</label>
@@ -659,7 +758,7 @@ export default function ProductImages() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div>
                   <label style={labelStyle}>文案模型</label>
-                  <Select
+                  <SearchableSelect
                     value={detailForm.textModel}
                     onChange={(v) => setDetailForm((f) => ({ ...f, textModel: v }))}
                     options={textModelOptions}
@@ -668,7 +767,7 @@ export default function ProductImages() {
                 </div>
                 <div>
                   <label style={labelStyle}>生图模型</label>
-                  <Select
+                  <SearchableSelect
                     value={detailForm.imageModel}
                     onChange={(v) => setDetailForm((f) => ({ ...f, imageModel: v }))}
                     options={imageModelOptions}
@@ -676,7 +775,7 @@ export default function ProductImages() {
                   />
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div>
                   <label style={labelStyle}>图片尺寸</label>
                   <Select
@@ -699,21 +798,18 @@ export default function ProductImages() {
                     placeholder="选择质量"
                   />
                 </div>
-                <div>
-                  <label style={labelStyle}>生成数量</label>
-                  <Select
-                    value={detailForm.quantity}
-                    onChange={(v) => setDetailForm((f) => ({ ...f, quantity: v }))}
-                    options={[
-                      { value: '1', label: '1 张' },
-                      { value: '4', label: '4 张' },
-                      { value: '8', label: '8 张' }
-                    ]}
-                    placeholder="选择数量"
-                  />
-                </div>
               </div>
-              <Button variant="primary" onClick={handleAnalyze} style={{
+
+              {/* 详情图模块选择:勾选模块并设置各模块生成数量 */}
+              <ModuleSelector
+                baseModules={DETAIL_MODULE_TYPES}
+                storageKey="detail_custom_modules"
+                overrideKey="detail_module_overrides"
+                value={detailModules}
+                onChange={setDetailModules}
+                onModuleListChange={setDetailModuleList}
+              />
+              <Button variant="primary" onClick={handleAnalyze} disabled={isAnalyzing} style={{
                 width: '100%',
                 marginTop: '4px',
                 display: 'flex',
@@ -722,7 +818,7 @@ export default function ProductImages() {
                 gap: '8px'
               }}>
                 <Wand2 size={16} />
-                分析产品
+                {isAnalyzing ? '分析中...' : '分析产品'}
               </Button>
             </div>
           )}
@@ -759,7 +855,7 @@ export default function ProductImages() {
                   <Textarea
                     value={adForm.description}
                     onChange={(v) => setAdForm((f) => ({ ...f, description: v }))}
-                    placeholder="描述广告的用途、风格、文案要求..."
+                    placeholder="建议输入：产品名称、卖点、目标人群、活动主题、价格优惠、希望突出的氛围等"
                     rows={3}
                   />
                   <button
@@ -787,7 +883,7 @@ export default function ProductImages() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                 <div>
                   <label style={labelStyle}>文案模型</label>
-                  <Select
+                  <SearchableSelect
                     value={adForm.textModel}
                     onChange={(v) => setAdForm((f) => ({ ...f, textModel: v }))}
                     options={textModelOptions}
@@ -796,7 +892,7 @@ export default function ProductImages() {
                 </div>
                 <div>
                   <label style={labelStyle}>生图模型</label>
-                  <Select
+                  <SearchableSelect
                     value={adForm.imageModel}
                     onChange={(v) => setAdForm((f) => ({ ...f, imageModel: v }))}
                     options={imageModelOptions}
@@ -835,7 +931,12 @@ export default function ProductImages() {
                     options={[
                       { value: '1', label: '1 张' },
                       { value: '2', label: '2 张' },
-                      { value: '4', label: '4 张' }
+                      { value: '4', label: '4 张' },
+                      { value: '6', label: '6 张' },
+                      { value: '8', label: '8 张' },
+                      { value: '10', label: '10 张' },
+                      { value: '15', label: '15 张' },
+                      { value: '20', label: '20 张' }
                     ]}
                     placeholder="选择数量"
                   />
@@ -953,9 +1054,23 @@ export default function ProductImages() {
         onApply={handleAiApply}
         productImages={productImages.map(img => img.dataUrl)}
         productInfo={getCurrentProductInfo()}
-        context={mainForm.platform ? `平台: ${mainForm.platform}` : ''}
-        selectedModel={mainForm.textModel}
+        context={currentAiPlatformLabel ? `目标平台：${currentAiPlatformLabel}` : ''}
+        // 按 AI 帮写目标取对应 Tab 的文案模型(主图/详情图/广告图各自独立)
+        selectedModel={
+          aiModalTarget === 'main' ? mainForm.textModel
+            : aiModalTarget === 'detail' ? detailForm.textModel
+            : adForm.textModel
+        }
       />
+
+      {errorModal && (
+        <ErrorModal
+          open
+          title={errorModal.title}
+          message={errorModal.message}
+          onClose={() => setErrorModal(null)}
+        />
+      )}
 
       {/* Image preview overlay */}
       {previewUrl && (

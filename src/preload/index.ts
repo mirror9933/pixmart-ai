@@ -67,6 +67,7 @@ const api = {
     generateImages: (data: any) => ipcRenderer.invoke('ai:generateImages', data),
     aiWrite: (data: any) => ipcRenderer.invoke('ai:aiWrite', data),
     getTaskStatus: (taskId: string) => ipcRenderer.invoke('ai:getTaskStatus', taskId),
+    checkSize: (data: { model?: string; size?: string }) => ipcRenderer.invoke('ai:checkSize', data),
     onTaskUpdate: (callback: (task: any) => void) => {
       const handler = (_event: any, task: any) => callback(task)
       ipcRenderer.on('ai:taskUpdate', handler)
@@ -75,6 +76,17 @@ const api = {
   },
   theme: {
     apply: (theme: string) => ipcRenderer.send('theme:apply', theme),
+  },
+  updater: {
+    check: () => ipcRenderer.invoke('updater:check'),
+    download: () => ipcRenderer.invoke('updater:download'),
+    quitAndInstall: () => ipcRenderer.invoke('updater:quitAndInstall'),
+    getState: () => ipcRenderer.invoke('updater:getState'),
+    onStatus: (callback: (status: any) => void) => {
+      const handler = (_event: any, status: any) => callback(status)
+      ipcRenderer.on('updater:status', handler)
+      return () => { ipcRenderer.removeListener('updater:status', handler) }
+    },
   },
 }
 

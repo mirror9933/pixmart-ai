@@ -2,18 +2,14 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Check, ChevronDown, ChevronUp, ArrowLeft, Sparkles, Palette, Type,
-  Layers, Eye, Image as ImageIcon, Loader2, Download, FolderDown, X
+  Layers, Eye, Image as ImageIcon, Loader2, Download, FolderDown, X, AlertCircle
 } from 'lucide-react'
 import StepIndicator from '@/components/shared/StepIndicator'
 import Button from '@/components/ui/Button'
 import Select from '@/components/ui/Select'
-
-const speeds = [
-  { key: 'recommended', label: '推荐', desc: '平衡质量与速度' },
-  { key: 'standard', label: '标准', desc: '高质量输出' },
-  { key: 'fast', label: '快速', desc: '快速出图' },
-  { key: 'turbo', label: '极速', desc: '最快出图' }
-] as const
+import Modal from '@/components/ui/Modal'
+import ErrorModal from '@/components/shared/ErrorModal'
+import { MAIN_MODULE_TYPES } from '@/constants/mainModules'
 
 const designSections_default = [
   {
@@ -75,6 +71,81 @@ const imagePlans_default = [
   }
 ]
 
+/** 加载图片获取实际像素尺寸 */
+function getImageSize(url: string): Promise<{ w: number; h: number } | null> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+    img.onerror = () => resolve(null)
+    img.src = url
+  })
+}
+
+/** 比较请求尺寸(比例 w:h 或像素 WxH)与实际图片比例是否一致(容差 15%) */
+function ratioMatches(requested: string, actualW: number, actualH: number): boolean {
+  const m = requested.match(/^(\d+):(\d+)$/)
+  const mp = requested.match(/^(\d+)x(\d+)$/)
+  const expected = m
+    ? parseInt(m[1], 10) / parseInt(m[2], 10)
+    : mp
+      ? parseInt(mp[1], 10) / parseInt(mp[2], 10)
+      : 0
+  if (!expected) return true
+  const actual = actualW / actualH
+  return Math.abs(actual - expected) / expected <= 0.15
+}
+
+/** 按目标数量展开规划:数量多于方案数时循环复用方案,少于时截取 */
+function expandPlansToQuantity(
+  plans: Array<{ num: number; id: string; title: string; desc: string; prompt: string }>,
+  quantity: number
+): Array<{ num: number; id: string; title: string; desc: string; prompt: string }> {
+  if (!quantity || quantity <= 0 || plans.length === 0) return plans
+  const result: Array<{ num: number; id: string; title: string; desc: string; prompt: string }> = []
+  for (let i = 0; i < quantity; i++) {
+    const p = plans[i % plans.length]
+    const round = Math.floor(i / plans.length)
+    result.push({
+      ...p,
+      num: result.length + 1,
+      id: `${p.id || p.num}-${i + 1}`,
+      title: quantity > plans.length ? `${p.title} ${round + 1}` : p.title
+    })
+  }
+  return result
+}
+
+/** 按用户在需求输入阶段选择的模块展开图片规划:每个模块按其数量生成多张 */
+function buildMainImagePlans(
+  modules: Record<string, number> | null | undefined,
+  moduleTypes: Array<{ key: string; title: string; desc: string; prompt: string }> = MAIN_MODULE_TYPES
+) {
+  // 兼容旧入口(无模块选择):默认每类 1 张
+  if (!modules || Object.keys(modules).length === 0) {
+    return moduleTypes.map((plan, i) => ({
+      num: i + 1,
+      id: `main-plan-${i + 1}`,
+      title: plan.title,
+      desc: plan.desc,
+      prompt: plan.prompt
+    }))
+  }
+  const plans: Array<{ num: number; id: string; title: string; desc: string; prompt: string }> = []
+  for (const type of moduleTypes) {
+    const count = modules[type.key] || 0
+    for (let i = 1; i <= count; i++) {
+      plans.push({
+        num: plans.length + 1,
+        id: `${type.key}-${i}`,
+        title: count > 1 ? `${type.title} ${i}` : type.title,
+        desc: type.desc,
+        prompt: type.prompt
+      })
+    }
+  }
+  return plans
+}
+
 export default function ConfirmPlan() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -93,7 +164,6 @@ export default function ConfirmPlan() {
   const productProfile = location.state?.productProfile || ''
   const productProfileEn = location.state?.productProfileEn || ''
   const extraPrompt = location.state?.extraPrompt || ''
-  const [speed, setSpeed] = useState<string>('recommended')
   const [expandedSections, setExpandedSections] = useState<Set<number>>(new Set([0]))
   const [generating, setGenerating] = useState(false)
   const [quality, setQuality] = useState(targetQuality)
@@ -110,6 +180,20 @@ export default function ConfirmPlan() {
   useEffect(() => {
     const unsub = window.api.ai.onTaskUpdate((task: any) => {
       if (!taskIdsRef.current.includes(task.id)) return
+      // 任务失败(如模型不支持生图/尺寸):弹窗提示一次
+      if (task.status === 'failed' && !failedShownRef.current) {
+        failedShownRef.current = true
+        const errMsg = task.error || ''
+        if (errMsg.startsWith('SIZE_NOT_SUPPORTED')) {
+          // 模型不支持当前尺寸:弹窗让用户选择是否按保底尺寸生成
+          setSizeFallback({ requested: pixelSize, fallback: fallbackSizeFor(pixelSize) })
+        } else {
+          setErrorModal({
+            title: '图片生成失败',
+            message: `${errMsg}\n\n如果模型不支持图片生成，请更换「生图模型」后重试。`
+          })
+        }
+      }
       if (task.status === 'completed' || task.status === 'failed') {
         setGeneratedImages(prev => {
           if (prev.some(t => t.id === task.id)) return prev
@@ -123,6 +207,8 @@ export default function ConfirmPlan() {
           }
           return next
         })
+        // 生成后校验实际输出尺寸是否与请求一致(捕获模型静默忽略尺寸的情况)
+        checkTaskSize(task)
       }
     })
     return unsub
@@ -178,20 +264,86 @@ export default function ConfirmPlan() {
     }
   ] : designSections_default
 
-  // Build image plans from real analysis
-  const imagePlans = analysisResult?.designPlan?.length
+  // 主图/详情图流程:按需求输入阶段选择的模块(内置含用户提示词覆盖 + 自定义 × 各自数量)展开规划;
+  // 其余流程(广告图/风格复刻)仍使用 AI 分析出的设计规划
+  const isModuleTab = activeTabFromState === '主图' || activeTabFromState === '详情图'
+  const mainModules = (location.state?.mainModules as Record<string, number> | null | undefined) || null
+  const moduleTypesFromState = (location.state?.moduleTypes as Array<{ key: string; title: string; desc: string; prompt: string }> | undefined)
+  const moduleTypes = moduleTypesFromState && moduleTypesFromState.length > 0 ? moduleTypesFromState : MAIN_MODULE_TYPES
+  // 广告图/风格复刻:按用户在需求输入阶段选择的生成数量展开规划(循环复用 AI 方案)
+  const isQuantityTab = activeTabFromState === '广告图' || activeTabFromState === '单图复刻'
+  const basePlans = analysisResult?.designPlan?.length
     ? analysisResult.designPlan.map((plan: any, i: number) => ({
         num: i + 1,
+        id: plan.id || `plan-${i + 1}`,
         title: plan.title || `方案 ${i + 1}`,
-        desc: plan.description || plan.prompt || ''
+        desc: plan.description || plan.prompt || '',
+        prompt: plan.prompt || '',
+        style: plan.style || ''
       }))
     : imagePlans_default
+  const imagePlans = isModuleTab
+    ? buildMainImagePlans(mainModules, moduleTypes)
+    : isQuantityTab
+      ? expandPlansToQuantity(basePlans, targetQuantity)
+      : basePlans
 
-  const handleGenerate = async () => {
+  // 错误弹窗(模型未选 / 生成失败 / 模型不支持生图等)
+  const [errorModal, setErrorModal] = useState<{ title?: string; message: string } | null>(null)
+  const failedShownRef = useRef(false)
+  // 本次生成请求的尺寸(用于生成后校验实际输出)
+  const lastRequestedSizeRef = useRef<string>('')
+  // 尺寸不符弹窗(模型静默忽略尺寸时提示)与防重复标记
+  const [sizeMismatchModal, setSizeMismatchModal] = useState<{ requested: string; actualW: number; actualH: number } | null>(null)
+  const sizeNotifiedRef = useRef(false)
+
+  /** 生成完成后校验实际输出尺寸是否与请求一致(不依赖模型报错,能捕获模型静默忽略尺寸的情况) */
+  const checkTaskSize = async (task: any) => {
+    if (task.status !== 'completed' || !task.result?.url) return
+    const requested = lastRequestedSizeRef.current
+    if (!requested) return
+    const size = await getImageSize(task.result.url)
+    if (!size) return
+    if (ratioMatches(requested, size.w, size.h)) return
+    // 实际尺寸与请求不符:标注该任务,并弹窗提示一次
+    setGeneratedImages(prev => prev.map(t =>
+      t.id === task.id ? { ...t, sizeMismatch: { requested, actualW: size.w, actualH: size.h } } : t
+    ))
+    if (!sizeNotifiedRef.current) {
+      sizeNotifiedRef.current = true
+      setSizeMismatchModal({ requested, actualW: size.w, actualH: size.h })
+    }
+  }
+
+  const generateWithSize = async (size: string) => {
+    if (generating || !projectIdFromState) return
+    // 模型必选校验:图片生成需要生图模型
+    if (!selectedImageModel) {
+      setErrorModal({
+        title: '请先选择模型',
+        message: '请先在「生图模型」中选择一个支持图片生成的模型（返回上一步设置），再开始生成。'
+      })
+      return
+    }
+    // 生成前按模型尺寸能力表校验:明确不支持时直接弹窗,不再浪费一次 API 调用
+    try {
+      const check = await window.api.ai.checkSize({ model: selectedImageModel, size })
+      if (check.known && !check.supported) {
+        setSizeFallback({
+          requested: size,
+          fallback: check.fallback || fallbackSizeFor(size),
+          suggestions: check.suggestions
+        })
+        return
+      }
+    } catch {}
     const toGenerate = selectedPlans.size > 0
-      ? analysisResult.designPlan.filter((_: any, i: number) => selectedPlans.has(i))
-      : analysisResult.designPlan
-    if (generating || !projectIdFromState || !toGenerate?.length) return
+      ? imagePlans.filter((_: any, i: number) => selectedPlans.has(i))
+      : imagePlans
+    if (!toGenerate?.length) return
+    lastRequestedSizeRef.current = size
+    sizeNotifiedRef.current = false
+    failedShownRef.current = false
     setGenerating(true)
     setGenerateDone(false)
     setGeneratedImages([])
@@ -200,7 +352,7 @@ export default function ConfirmPlan() {
         id: plan.id || '',
         prompt: plan.prompt || plan.title || '',
         style: plan.style || '',
-        size: pixelSize
+        size
       }))
       const response = await window.api.ai.generateImages({
         projectId: projectIdFromState,
@@ -217,7 +369,30 @@ export default function ConfirmPlan() {
       // generating stays true until task updates set generateDone
     } catch (err: any) {
       setGenerating(false)
+      setErrorModal({
+        title: '提交生成失败',
+        message: `${err?.message || '未知错误'}\n\n如果模型不支持图片生成，请更换「生图模型」后重试。`
+      })
     }
+  }
+
+  const handleGenerate = () => { generateWithSize(pixelSize) }
+
+  // 尺寸不支持弹窗:模型不支持用户所选尺寸时,让用户选择是否按保底尺寸生成
+  const [sizeFallback, setSizeFallback] = useState<{ requested: string; fallback: string; suggestions?: string[] } | null>(null)
+  const handleFallbackGenerate = () => {
+    if (!sizeFallback) return
+    const fb = sizeFallback.fallback
+    setSizeFallback(null)
+    generateWithSize(fb)
+  }
+
+  // 尺寸不符(模型静默忽略尺寸):按保底尺寸重新生成
+  const handleMismatchFallback = () => {
+    if (!sizeMismatchModal) return
+    const fb = fallbackSizeFor(sizeMismatchModal.requested)
+    setSizeMismatchModal(null)
+    generateWithSize(fb)
   }
 
   // Initialize all plans selected on first render
@@ -244,6 +419,7 @@ export default function ConfirmPlan() {
   const saveToProject = async (dataUrl: string) => {
     try {
       await window.api.files.saveImageFromDataUrl(projectIdFromState, dataUrl)
+      savedUrlsRef.current.add(dataUrl)
       setSaveMsg('已保存到项目记录')
       setTimeout(() => setSaveMsg(''), 2000)
     } catch {
@@ -251,23 +427,51 @@ export default function ConfirmPlan() {
     }
   }
 
-  // Size mapping from user selection to DALL-E supported sizes (1024² | 1792×1024 | 1024×1792)
-  // Extract ratio from value (e.g. "1:1_1200x1200" → "1:1", or bare "1:1")
-  const ratio = selectedSize.includes('_') ? selectedSize.split('_')[0] : selectedSize
-  const sizeMap: Record<string, string> = {
-    '1:1': '1024x1024',
-    '3:4': '1024x1792',
-    '4:3': '1792x1024',
-    '2:3': '1024x1792',
-    '3:2': '1792x1024',
-    '4:5': '1024x1792',
-    '5:4': '1792x1024',
-    '16:9': '1792x1024',
-    '9:16': '1024x1792',
-    '21:10': '1792x1024',
-    '21:9': '1792x1024',
+  // 一键保存到项目:保存所有生成成功的图片(跳过已保存的),并标记防重复
+  const [savingAll, setSavingAll] = useState(false)
+  const savedUrlsRef = useRef<Set<string>>(new Set())
+
+  const saveAllToProject = async () => {
+    if (savingAll) return
+    const urls = generatedImages
+      .filter((t: any) => t.result?.url && !savedUrlsRef.current.has(t.result.url))
+      .map((t: any) => t.result.url)
+    if (urls.length === 0) {
+      setSaveMsg('图片已全部保存')
+      setTimeout(() => setSaveMsg(''), 2000)
+      return
+    }
+    setSavingAll(true)
+    let saved = 0
+    try {
+      for (const url of urls) {
+        try {
+          await window.api.files.saveImageFromDataUrl(projectIdFromState, url)
+          savedUrlsRef.current.add(url)
+          saved++
+        } catch {}
+      }
+      setSaveMsg(`已保存 ${saved} 张图片到项目记录`)
+    } finally {
+      setSavingAll(false)
+    }
+    setTimeout(() => setSaveMsg(''), 2000)
   }
-  const pixelSize = sizeMap[ratio] || '1024x1024'
+
+  // 用户选择的尺寸(比例)原样传给后端,不做静默转换;
+  // 模型不支持该尺寸时,后端返回 SIZE_NOT_SUPPORTED 标记,由前端弹窗让用户选择是否按保底尺寸生成
+  const ratio = selectedSize.includes('_') ? selectedSize.split('_')[0] : selectedSize
+  const pixelSize = ratio
+
+  // 保底尺寸:按比例方向取模型通用像素(横版 1792x1024 / 竖版 1024x1792 / 方形 1024x1024)
+  const fallbackSizeFor = (r: string): string => {
+    const m = r.match(/^(\d+):(\d+)$/)
+    if (!m) return '1024x1024'
+    const w = parseInt(m[1], 10)
+    const h = parseInt(m[2], 10)
+    if (w === h) return '1024x1024'
+    return w > h ? '1792x1024' : '1024x1792'
+  }
 
   const imageCount = imagePlans.length
 
@@ -445,43 +649,6 @@ export default function ConfirmPlan() {
             </div>
           </div>
 
-          <div style={{ marginBottom: '16px' }}>
-            <label style={labelStyle}>生成速度</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              {speeds.map((s) => (
-                <button
-                  key={s.key}
-                  onClick={() => setSpeed(s.key)}
-                  style={{
-                    padding: '10px',
-                    border: speed === s.key ? '1px solid var(--brand)' : '1px solid var(--border)',
-                    borderRadius: 'var(--radius-md)',
-                    background: speed === s.key ? 'var(--brand-glow)' : 'transparent',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  <span style={{
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    color: speed === s.key ? 'var(--brand)' : 'var(--fg)'
-                  }}>
-                    {s.label}
-                  </span>
-                  <span style={{
-                    fontSize: '11px',
-                    color: 'var(--fg-muted)',
-                    display: 'block',
-                    marginTop: '2px'
-                  }}>
-                    {s.desc}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-
           <Button variant="primary" onClick={handleGenerate} disabled={generating} style={{
             width: '100%',
             display: 'flex',
@@ -602,9 +769,24 @@ export default function ConfirmPlan() {
 
                 {generateDone && (
                   <>
-                    <p style={{ fontSize: '13px', color: 'var(--fg-muted)', margin: '0 0 12px 0' }}>
-                      共 {generatedImages.length} 张生成完成
-                    </p>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      marginBottom: '12px'
+                    }}>
+                      <p style={{ fontSize: '13px', color: 'var(--fg-muted)', margin: 0 }}>
+                        共 {generatedImages.length} 张生成完成
+                      </p>
+                      <Button variant="primary" size="sm" onClick={saveAllToProject} disabled={savingAll} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}>
+                        <FolderDown size={13} />
+                        {savingAll ? '保存中...' : '一键保存到项目'}
+                      </Button>
+                    </div>
                     <div style={{
                       display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
                       gap: '10px', marginBottom: '16px'
@@ -643,7 +825,7 @@ export default function ConfirmPlan() {
                           )}
                         </div>
                         <div style={{
-                          padding: '4px', display: 'flex', gap: '2px',
+                          padding: '4px', display: 'flex', gap: '4px',
                           borderTop: '1px solid var(--border-subtle)'
                         }}>
                           {task.result?.url && (
@@ -653,33 +835,46 @@ export default function ConfirmPlan() {
                                 title="下载"
                                 style={{
                                   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                  gap: '2px', padding: '4px 2px', fontSize: '10px', fontWeight: 500,
+                                  gap: '3px', padding: '5px 2px', fontSize: '11px', fontWeight: 500,
                                   border: 'none', borderRadius: '4px', cursor: 'pointer',
                                   background: 'var(--bg-muted)', color: 'var(--fg-secondary)'
                                 }}
                               >
-                                <Download size={10} /> 下载
+                                <Download size={11} /> 下载
                               </button>
                               <button
                                 onClick={() => saveToProject(task.result.url)}
                                 title="保存到项目"
                                 style={{
                                   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                  gap: '2px', padding: '4px 2px', fontSize: '10px', fontWeight: 500,
+                                  gap: '3px', padding: '5px 2px', fontSize: '11px', fontWeight: 500,
                                   border: 'none', borderRadius: '4px', cursor: 'pointer',
                                   background: 'var(--brand-glow)', color: 'var(--brand)'
                                 }}
                               >
-                                <FolderDown size={10} /> 保存
+                                <FolderDown size={11} /> 保存
                               </button>
                             </>
                           )}
-                          {task.status === 'failed' && (
-                            <span style={{ fontSize: '10px', color: 'var(--danger)', textAlign: 'center', width: '100%', padding: '4px' }}>
-                              生成失败
-                            </span>
-                          )}
                         </div>
+                        {task.sizeMismatch && (
+                          <div style={{
+                            padding: '3px 6px', fontSize: '10px', color: '#b45309',
+                            background: 'rgba(180,83,9,0.1)', textAlign: 'center',
+                            borderTop: '1px solid var(--border-subtle)',
+                            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+                          }}>
+                            实际 {task.sizeMismatch.actualW}×{task.sizeMismatch.actualH}（请求 {task.sizeMismatch.requested}）
+                          </div>
+                        )}
+                        {task.status === 'failed' && (
+                          <div style={{
+                            fontSize: '11px', color: 'var(--danger)', textAlign: 'center',
+                            padding: '5px 4px', borderTop: '1px solid var(--border-subtle)'
+                          }}>
+                            生成失败
+                          </div>
+                        )}
                       </div>
                     ))}
                     </div>
@@ -934,6 +1129,75 @@ export default function ConfirmPlan() {
           </div>
         </div>
       </div>
+
+      {/* 尺寸不符弹窗:模型静默忽略尺寸时提示,让用户选择是否按保底尺寸重试 */}
+      {sizeMismatchModal && (
+        <Modal
+          open
+          onClose={() => setSizeMismatchModal(null)}
+          title="生成尺寸与所选不一致"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setSizeMismatchModal(null)}>忽略</Button>
+              <Button variant="primary" onClick={handleMismatchFallback}>按保底尺寸重试</Button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+            <AlertCircle size={20} style={{ color: '#b45309', flexShrink: 0, marginTop: '2px' }} />
+            <div>
+              <p style={{ margin: '0 0 8px', fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
+                模型未按所选尺寸生成：请求 <strong>{sizeMismatchModal.requested}</strong>，实际输出 <strong>{sizeMismatchModal.actualW}×{sizeMismatchModal.actualH}</strong>。
+              </p>
+              <p style={{ margin: 0, fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
+                是否按保底尺寸重新生成？或保留当前结果继续。
+              </p>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* 尺寸不支持弹窗:让用户选择是否按保底尺寸生成 */}
+      {sizeFallback && (
+        <Modal
+          open
+          onClose={() => setSizeFallback(null)}
+          title="尺寸不支持"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setSizeFallback(null)}>取消</Button>
+              <Button variant="primary" onClick={handleFallbackGenerate}>按保底尺寸生成</Button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+            <AlertCircle size={20} style={{ color: 'var(--danger)', flexShrink: 0, marginTop: '2px' }} />
+            <div>
+              <p style={{ margin: '0 0 8px', fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
+                当前生图模型不支持 <strong>{sizeFallback.requested}</strong> 尺寸，无法按该尺寸生成图片。
+              </p>
+              {sizeFallback.suggestions && sizeFallback.suggestions.length > 0 && (
+                <p style={{ margin: '0 0 8px', fontSize: '12px', color: 'var(--fg-muted)', lineHeight: '1.7' }}>
+                  该模型支持：{sizeFallback.suggestions.join('、')}
+                </p>
+              )}
+              <p style={{ margin: 0, fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
+                是否按保底尺寸 <strong>{sizeFallback.fallback}</strong> 生成？
+              </p>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* 错误弹窗 */}
+      {errorModal && (
+        <ErrorModal
+          open
+          title={errorModal.title}
+          message={errorModal.message}
+          onClose={() => setErrorModal(null)}
+        />
+      )}
 
       {/* Preview Modal */}
       {previewImage && (

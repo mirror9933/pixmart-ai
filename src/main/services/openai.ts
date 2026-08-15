@@ -36,6 +36,12 @@ function extractError(error: any): string {
   return msg || cause || (status ? `HTTP ${status}` : '') || (type ? `[${type}]` : '') || 'Unknown error'
 }
 
+/** 判断错误是否与图片尺寸(不支持)相关 */
+function isSizeRelatedError(msg: string): boolean {
+  return /(invalid|unsupported|not (supported|allowed|available)|must be one of|only support|does not support)/i.test(msg)
+    && /(size|dimension|resolution|ratio)/i.test(msg)
+}
+
 /** 容错解析分析结果 JSON：兼容 markdown 代码围栏与前后多余文本/截断 */
 function parseAnalysisContent(content: string): ProductAnalysis {
   let text = content.trim()
@@ -203,7 +209,7 @@ export class OpenAIProvider implements AIProvider {
   }
 
   async generateImage(prompt: string, options?: GenerateImageOptions): Promise<GeneratedImage> {
-    const requestedSize = this.mapSize(options?.size || '1024x1024')
+    const requestedSize = this.normalizeSize(options?.size || '1:1')
     // Map quality labels to API values: 'low' / 'medium' / 'high' / 'auto'
     const qualityMap: Record<string, string> = {
       'standard': 'low',
@@ -295,7 +301,7 @@ export class OpenAIProvider implements AIProvider {
     // Gemini 原生协议优先（Ofox）：图像编辑/参考图生图仅在原生协议下可用。
     // 直接把风格参考图与产品主体图作为 inlineData 输入，确保主体不被改变。
     if (refs.length > 0 && this.geminiNativeBaseUrl) {
-      const gem = await this.generateWithGeminiNative(prompt, refs)
+      const gem = await this.generateWithGeminiNative(prompt, refs, requestedSize)
       if (gem) {
         logger.info('Gemini native image generation succeeded with reference images (subject preserved)')
         return gem
@@ -313,7 +319,7 @@ export class OpenAIProvider implements AIProvider {
         const a0 = await attempt(requestedSize, 'agnes', false)
         if (a0) return a0
         logger.warn(`Agnes extra_body.image failed, retrying without response_format: ${lastError}`)
-        const a0b = await attempt('1024x1024', 'agnes', false, false)
+        const a0b = await attempt(requestedSize, 'agnes', false, false)
         if (a0b) return a0b
         logger.warn(`Agnes multimodal failed, falling back to generic attempts: ${lastError}`)
       }
@@ -324,7 +330,7 @@ export class OpenAIProvider implements AIProvider {
           const of1 = await attempt(requestedSize, 'ofox', true)
           if (of1) return of1
           logger.warn(`Ofox input_images failed, retrying without quality: ${lastError}`)
-          const of2 = await attempt('1024x1024', 'ofox', false)
+          const of2 = await attempt(requestedSize, 'ofox', false)
           if (of2) return of2
         }
         if (isGptImage) {
@@ -337,8 +343,8 @@ export class OpenAIProvider implements AIProvider {
       // 3) prompt 数组 + 用户尺寸（gpt-image-1 风格）
       const a = await attempt(requestedSize, 'array', true)
       if (a) return a
-      // 4) prompt 数组 + 方形尺寸
-      if (requestedSize !== '1024x1024') {
+      // 4) prompt 数组 + 方形尺寸（尺寸错误时不静默降级，交由前端弹窗提示用户选择保底尺寸）
+      if (requestedSize !== '1024x1024' && !isSizeRelatedError(lastError)) {
         logger.warn(`Array-prompt multimodal failed with size ${requestedSize}, retrying with 1024x1024: ${lastError}`)
         const b = await attempt('1024x1024', 'array', true)
         if (b) return b
@@ -347,48 +353,64 @@ export class OpenAIProvider implements AIProvider {
       logger.warn(`Array-prompt multimodal rejected, retrying with image param format: ${lastError}`)
       const c = await attempt(requestedSize, 'image', true)
       if (c) return c
-      // 6) image 参数 + 方形尺寸
-      if (requestedSize !== '1024x1024') {
+      // 6) image 参数 + 方形尺寸（尺寸错误时不静默降级）
+      if (requestedSize !== '1024x1024' && !isSizeRelatedError(lastError)) {
         logger.warn(`Image-param multimodal failed with size ${requestedSize}, retrying with 1024x1024: ${lastError}`)
         const d = await attempt('1024x1024', 'image', true)
         if (d) return d
       }
-      // 7) image 参数 + 去除 quality
-      logger.warn(`Image-param multimodal failed, retrying without quality param: ${lastError}`)
-      const e = await attempt('1024x1024', 'image', false)
-      if (e) return e
+      // 7) image 参数 + 去除 quality（尺寸错误时保持原尺寸尝试，不再切换方形）
+      if (!isSizeRelatedError(lastError)) {
+        logger.warn(`Image-param multimodal failed, retrying without quality param: ${lastError}`)
+        const e = await attempt('1024x1024', 'image', false)
+        if (e) return e
+      }
       // 8) image 参数 + 去除 quality + 去除 response_format（部分中转不支持该参数）
-      logger.warn(`Image-param multimodal failed, retrying without quality & response_format params: ${lastError}`)
-      const e2 = await attempt('1024x1024', 'image', false, false)
-      if (e2) return e2
+      if (!isSizeRelatedError(lastError)) {
+        logger.warn(`Image-param multimodal failed, retrying without quality & response_format params: ${lastError}`)
+        const e2 = await attempt('1024x1024', 'image', false, false)
+        if (e2) return e2
+      }
       logger.warn(`Multimodal image generation not supported, falling back to text-only prompt: ${lastError}`)
     }
     const textMode = isAgnes ? 'agnes' : isOfox ? 'ofox' : 'text'
     // 9) 纯文本 + 用户尺寸
     const f = await attempt(requestedSize, textMode, true)
     if (f) return f
-    // 10) 尺寸降级：部分模型（如 gemini image）仅支持方形尺寸
-    if (requestedSize !== '1024x1024') {
+    // 10) 尺寸降级：部分模型（如 gemini image）仅支持方形尺寸（尺寸错误时不静默降级）
+    if (requestedSize !== '1024x1024' && !isSizeRelatedError(lastError)) {
       logger.warn(`Image generation failed with size ${requestedSize}, retrying with 1024x1024: ${lastError}`)
       const g = await attempt('1024x1024', textMode, true)
       if (g) return g
     }
-    // 11) 纯文本 + 方形 + 无 quality
-    const h = await attempt('1024x1024', textMode, false)
-    if (h) return h
-    // 12) 纯文本 + 方形 + 无 quality + 无 response_format 兜底
-    logger.warn(`Text-only generation failed, retrying without quality & response_format params: ${lastError}`)
-    const h2 = await attempt('1024x1024', textMode, false, false)
-    if (h2) return h2
-    throw new Error(`图片生成失败: ${lastError || '未知错误'}`)
+    // 11) 纯文本 + 方形 + 无 quality（尺寸错误时跳过）
+    if (!isSizeRelatedError(lastError)) {
+      const h = await attempt('1024x1024', textMode, false)
+      if (h) return h
+    }
+    // 12) 纯文本 + 方形 + 无 quality + 无 response_format 兜底（尺寸错误时跳过）
+    if (!isSizeRelatedError(lastError)) {
+      logger.warn(`Text-only generation failed, retrying without quality & response_format params: ${lastError}`)
+      const h2 = await attempt('1024x1024', textMode, false, false)
+      if (h2) return h2
+    }
+    // 尺寸不被模型支持:带标记抛出,前端据此弹窗让用户选择是否按保底尺寸生成
+    const sizeUnsupported = isSizeRelatedError(lastError)
+    throw new Error(`${sizeUnsupported ? 'SIZE_NOT_SUPPORTED|' : ''}图片生成失败: ${lastError || '未知错误'}`)
   }
 
-  /** 根据尺寸推断宽高比（用于 Agnes 档位式 size 的 ratio 参数） */
+  /** 根据尺寸推断宽高比（用于 Agnes 档位式 size 的 ratio 参数），支持 "W:H" 比例与 "WxH" 像素两种格式 */
   private inferRatio(size: string): string {
+    const ratioMatch = size.match(/^(\d+):(\d+)$/)
+    if (ratioMatch) {
+      return this.ratioFromWH(parseInt(ratioMatch[1], 10), parseInt(ratioMatch[2], 10))
+    }
     const m = size.match(/^(\d+)x(\d+)$/)
     if (!m) return '1:1'
-    const w = parseInt(m[1], 10)
-    const h = parseInt(m[2], 10)
+    return this.ratioFromWH(parseInt(m[1], 10), parseInt(m[2], 10))
+  }
+
+  private ratioFromWH(w: number, h: number): string {
     const r = w / h
     if (r > 1.6) return '16:9'
     if (r > 1.3) return '3:2'
@@ -430,7 +452,7 @@ export class OpenAIProvider implements AIProvider {
   }
 
   /** 通过 Gemini 原生协议（Ofox）生成/编辑图片：参考图以 inlineData 输入，保持产品主体一致 */
-  private async generateWithGeminiNative(prompt: string, refs: string[]): Promise<GeneratedImage | null> {
+  private async generateWithGeminiNative(prompt: string, refs: string[], size?: string): Promise<GeneratedImage | null> {
     const base = this.geminiNativeBaseUrl
     if (!base) return null
     try {
@@ -441,13 +463,19 @@ export class OpenAIProvider implements AIProvider {
         parts.push({ inlineData: { mimeType: m[1], data: m[2] } })
       }
       if (parts.length <= 1) return null
+      const body: Record<string, unknown> = { contents: [{ parts }] }
+      if (size) {
+        // 用户选择的尺寸(比例如 16:9)通过 generationConfig.imageConfig.aspectRatio 传给模型
+        const ratio = size.includes('_') ? size.split('_')[0] : size
+        body.generationConfig = { imageConfig: { aspectRatio: ratio } }
+      }
       const response = await fetch(`${base}/models/${encodeURIComponent(this.getImageModel())}:generateContent`, {
         method: 'POST',
         headers: {
           'x-goog-api-key': this.config.api_key,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ contents: [{ parts }] })
+        body: JSON.stringify(body)
       })
       const json = await response.json().catch(() => null)
       if (!response.ok) {
@@ -531,13 +559,27 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
-  private mapSize(size: string): '1024x1024' | '1792x1024' | '1024x1792' {
-    // Extract ratio in case value includes pixel suffix (e.g. "1:1_1200x1200")
+  /** Gemini 图像模型官方支持的宽高比集合 */
+  private static readonly GEMINI_ASPECT_RATIOS = ['1:1', '3:4', '4:3', '9:16', '16:9', '21:9']
+
+  /**
+   * 尺寸归一化:
+   * - Gemini 图像模型(imagen/gemini-*-image):仅支持官方比例集合,不支持的尺寸直接抛出
+   *   SIZE_NOT_SUPPORTED(前端弹窗让用户选择保底尺寸),避免模型静默生成错误比例;
+   *   保底重试传来的像素(如 1792x1024)自动归一到最接近的支持比例。
+   * - 其他模型:原样传递,由重试链与前端弹窗处理。
+   */
+  private normalizeSize(size: string): string {
     const ratio = size.includes('_') ? size.split('_')[0] : size
-    // Portrait sizes → 1024x1792
-    if (ratio === '3:4' || ratio === '2:3' || ratio === '4:5' || ratio === '9:16' || size.includes('1024x1792')) return '1024x1792'
-    // Landscape sizes → 1792x1024
-    if (ratio === '4:3' || ratio === '3:2' || ratio === '5:4' || ratio === '16:9' || ratio === '21:10' || ratio === '21:9' || size.includes('1792x1024')) return '1792x1024'
-    return '1024x1024'
+    if (/gemini.*image|imagen/i.test(this.getImageModel())) {
+      // 保底像素(如 1792x1024)归一到支持的比例
+      if (/^\d+x\d+$/.test(ratio)) {
+        const inferred = this.inferRatio(ratio)
+        return OpenAIProvider.GEMINI_ASPECT_RATIOS.includes(inferred) ? inferred : '1:1'
+      }
+      if (OpenAIProvider.GEMINI_ASPECT_RATIOS.includes(ratio)) return ratio
+      throw new Error(`SIZE_NOT_SUPPORTED|当前模型不支持 ${ratio} 尺寸比例（支持：${OpenAIProvider.GEMINI_ASPECT_RATIOS.join('、')}）`)
+    }
+    return ratio
   }
 }

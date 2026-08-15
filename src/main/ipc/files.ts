@@ -118,16 +118,35 @@ export function registerFilesHandlers(): void {
 
       // Update project record
       const db = getDb()
-      const projectRow = db.prepare('SELECT output_images, status FROM projects WHERE id = ?').get(projectId) as any
-      const existingImages: string[] = projectRow?.output_images ? JSON.parse(projectRow.output_images) : []
+      // 注意:必须用 bind + step + getAsObject 读取。sql.js 的 Statement.get() 不接受查询参数、
+      // 也不会自动 step,直接调用会返回空数组,导致第二次保存时读不到已有图片列表而被覆盖,
+      // 项目记录里只剩最后保存的一张图。
+      const stmt = db.prepare('SELECT output_images, status FROM projects WHERE id = ?')
+      stmt.bind([projectId])
+      if (!stmt.step()) {
+        stmt.free()
+        throw new Error(`Project not found: ${projectId}`)
+      }
+      const projectRow = stmt.getAsObject() as { output_images: string; status: string }
+      stmt.free()
+
+      const existingImages: string[] = (() => {
+        try {
+          const parsed = JSON.parse(projectRow.output_images)
+          return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+        } catch {
+          return []
+        }
+      })()
       existingImages.push(`images/${filename}`)
       const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
-      const newStatus = projectRow?.status === 'analyzed' ? 'completed' : projectRow?.status || 'completed'
+      // 已保存产物即视为完成(生成任务的终态由任务队列负责更新状态,此处兜底,
+      // 避免项目因停留在 processing 而永远显示"生成中")
       db.run(`
         UPDATE projects
-        SET output_images = ?, image_count = ?, status = ?, status_label = ?, updated_at = ?
+        SET output_images = ?, image_count = ?, status = 'completed', status_label = '完成', error_message = NULL, updated_at = ?
         WHERE id = ?
-      `, [JSON.stringify(existingImages), existingImages.length, newStatus, newStatus === 'completed' ? '完成' : '处理中', now, projectId])
+      `, [JSON.stringify(existingImages), existingImages.length, now, projectId])
       saveDatabase()
 
       return {

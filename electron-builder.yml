@@ -2,6 +2,12 @@
 # 打包：
 #   Windows（需在 Windows 上执行）: npm run build:win
 #   macOS（需在 macOS 上执行）:     npm run build:mac
+#
+# 在线更新（electron-updater）：
+#   1. 将下面 publish 的 owner/repo 改为你的 GitHub 仓库（如 owner: yourname, repo: pixmart-ai）
+#   2. 打包后把 dist 下的安装包 + latest.yml 上传到 GitHub Releases（也可用 GH_TOKEN 环境变量执行
+#      `npx electron-builder --win --publish always` 自动上传）
+#   3. 发布新版本时同步提升 package.json 的 version，并在 GitHub 打对应 tag
 
 appId: com.pixmart.ai
 productName: PixMart AI
@@ -19,6 +25,12 @@ asar: true
 
 # sharp 等原生依赖未被代码引用，跳过重编译避免失败
 npmRebuild: false
+
+# 在线更新发布源（GitHub Releases；私有仓库需设置 GH_TOKEN 环境变量）
+publish:
+  provider: github
+  owner: mirror9933
+  repo: pixmart-ai
 
 mac:
   icon: pixmart-logo.icns

@@ -1,49 +1,20 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ImagePlus, Sparkles, Wand2, Plus, Layers, Shield, Download,
-  Zap, Eye, X
+  ImagePlus, Wand2, Plus,
+  Zap, Eye, X, RefreshCw
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Select from '@/components/ui/Select'
+import SearchableSelect from '@/components/ui/SearchableSelect'
 import Textarea from '@/components/ui/Textarea'
+import ErrorModal from '@/components/shared/ErrorModal'
 import UploadArea, { type UploadedFile } from '@/components/ui/UploadArea'
-import AiWriteModal from '@/components/shared/AiWriteModal'
 import { useModelOptions } from '@/hooks/useModelOptions'
-
-const tabs = ['单图复刻', '批量复刻'] as const
-type Tab = (typeof tabs)[number]
-
-const speeds = [
-  { key: 'recommended', label: '推荐' },
-  { key: 'standard', label: '标准' },
-  { key: 'fast', label: '快速' },
-  { key: 'turbo', label: '极速' }
-] as const
-
-const features = [
-  {
-    icon: Layers,
-    title: '智能风格融合',
-    desc: 'AI 深度分析参考图的色彩、排版、视觉元素，智能融合到您的产品图中'
-  },
-  {
-    icon: Shield,
-    title: '产品特性保留',
-    desc: '在复刻风格的同时，确保产品主体清晰、细节完整、特征不丢失'
-  },
-  {
-    icon: Download,
-    title: '一键生成导出',
-    desc: '支持批量生成多张图片，一键导出高清文件，直接用于上架和投放'
-  }
-]
 
 export default function StyleReplication() {
   const navigate = useNavigate()
   const { textModels: textModelOptions, imageModels: imageModelOptions } = useModelOptions()
-  const [activeTab, setActiveTab] = useState<Tab>('单图复刻')
-  const [speed, setSpeed] = useState('recommended')
   const [prompt, setPrompt] = useState('')
   const [form, setForm] = useState({
     textModel: '',
@@ -52,12 +23,90 @@ export default function StyleReplication() {
     quality: '',
     quantity: ''
   })
-  const [aiModalOpen, setAiModalOpen] = useState(false)
   const [refImages, setRefImages] = useState<UploadedFile[]>([])
   const [productImages, setProductImages] = useState<UploadedFile[]>([])
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [isReplicating, setIsReplicating] = useState(false)
   const [replicateError, setReplicateError] = useState('')
+  // 错误弹窗(模型校验 / 分析失败 / 模型不支持识图等)
+  const [errorModal, setErrorModal] = useState<{ title?: string; message: string } | null>(null)
+
+  // 挂载时恢复临时保存的表单/图片;模型默认用上次使用的(last_models.style)
+  useEffect(() => {
+    (async () => {
+      try {
+        const [state, lastModelsRaw] = await Promise.all([
+          window.api.files.loadTempState('styleReplication'),
+          window.api.settings.get('last_models')
+        ])
+        let lastModels: any = {}
+        try { lastModels = lastModelsRaw ? JSON.parse(lastModelsRaw) : {} } catch {}
+        const defaultModels = {
+          textModel: lastModels.style?.textModel || '',
+          imageModel: lastModels.style?.imageModel || ''
+        }
+        if (state && typeof state === 'object') {
+          if (typeof state.prompt === 'string') setPrompt(state.prompt)
+          if (state.form) {
+            setForm({
+              ...state.form,
+              textModel: state.form.textModel || defaultModels.textModel,
+              imageModel: state.form.imageModel || defaultModels.imageModel
+            })
+          } else {
+            setForm((f) => ({ ...f, ...defaultModels }))
+          }
+          if (state.refImages?.length) setRefImages(state.refImages)
+          if (state.productImages?.length) setProductImages(state.productImages)
+        } else {
+          setForm((f) => ({ ...f, ...defaultModels }))
+        }
+      } catch {}
+    })()
+  }, [])
+
+  // 表单输入实时自动保存(500ms 防抖);模型选择单独持久化到 last_models(合并,不覆盖其他页面)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      window.api.settings.get('last_models').then((raw) => {
+        let prev: any = {}
+        try { prev = raw ? JSON.parse(raw) : {} } catch {}
+        window.api.settings.set('last_models', JSON.stringify({
+          ...prev,
+          style: { textModel: form.textModel, imageModel: form.imageModel }
+        })).catch(() => {})
+      }).catch(() => {})
+      window.api.files.saveTempState('styleReplication', {
+        prompt,
+        form,
+        refImages: refImages.map(img => ({ path: img.path, name: img.name, size: img.size, dataUrl: img.dataUrl })),
+        productImages: productImages.map(img => ({ path: img.path, name: img.name, size: img.size, dataUrl: img.dataUrl }))
+      }).catch(() => {})
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [prompt, form, refImages, productImages])
+
+  /** 刷新按钮:重置表单(清空输入),但保留文案模型/生图模型为上次使用的 */
+  const handleResetForm = async () => {
+    if (!window.confirm('确定要重置当前表单吗？输入的内容将清空（文案模型和生图模型会保留上次使用的）。')) return
+    let lastModels: any = {}
+    try {
+      const raw = await window.api.settings.get('last_models')
+      if (raw) lastModels = JSON.parse(raw)
+    } catch {}
+    setPrompt('')
+    setForm({
+      textModel: lastModels.style?.textModel || '',
+      imageModel: lastModels.style?.imageModel || '',
+      size: '',
+      quality: '',
+      quantity: ''
+    })
+    setRefImages([])
+    setProductImages([])
+    // 清空已保存的临时状态,避免下次打开恢复旧值
+    try { await window.api.files.saveTempState('styleReplication', {}) } catch {}
+  }
 
   const handleSelectRefImages = (files: UploadedFile[]) => {
     setRefImages(prev => [...prev, ...files])
@@ -90,6 +139,15 @@ export default function StyleReplication() {
     }
     if (productImages.length === 0) {
       setReplicateError('请先上传产品素材图')
+      return
+    }
+    // 模型必选校验:风格分析(识图)需要文案模型
+    if (!form.textModel) {
+      setReplicateError('请先选择文案模型')
+      setErrorModal({
+        title: '请先选择模型',
+        message: '风格复刻需要 AI 识别产品图片。请先在「文案模型」中选择一个支持识图的模型。'
+      })
       return
     }
     setIsReplicating(true)
@@ -155,7 +213,12 @@ export default function StyleReplication() {
         }
       })
     } catch (err: any) {
-      setReplicateError(err?.message || '复刻失败，请重试')
+      const msg = err?.message || '复刻失败，请重试'
+      setReplicateError(msg)
+      setErrorModal({
+        title: '风格分析失败',
+        message: `${msg}\n\n如果模型不支持图片识别（识图），请更换「文案模型」后重试。`
+      })
     } finally {
       setIsReplicating(false)
     }
@@ -163,6 +226,38 @@ export default function StyleReplication() {
 
   return (
     <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+      {/* 刷新按钮:重置表单(保留上次使用的模型) */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+        <button
+          onClick={handleResetForm}
+          title="重置当前表单（保留上次使用的模型）"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            padding: '6px 12px',
+            borderRadius: 'var(--radius-md)',
+            fontSize: '12px',
+            fontWeight: 500,
+            color: 'var(--fg-muted)',
+            backgroundColor: 'transparent',
+            border: '1px solid var(--border)',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = 'var(--brand)'
+            e.currentTarget.style.borderColor = 'var(--brand)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = 'var(--fg-muted)'
+            e.currentTarget.style.borderColor = 'var(--border)'
+          }}
+        >
+          <RefreshCw size={13} />
+          刷新
+        </button>
+      </div>
       <div style={{ textAlign: 'center', marginBottom: '28px' }}>
         <h1 style={{
           fontSize: '28px',
@@ -176,38 +271,6 @@ export default function StyleReplication() {
         <p style={{ fontSize: '14px', color: 'var(--fg-muted)', margin: 0 }}>
           上传参考设计图，AI 智能分析风格并应用到您的产品图上
         </p>
-      </div>
-
-      <div style={{
-        display: 'flex',
-        gap: '4px',
-        marginBottom: '20px',
-        background: 'var(--bg-muted)',
-        borderRadius: 'var(--radius-md)',
-        padding: '4px',
-        width: 'fit-content',
-        margin: '0 auto 20px'
-      }}>
-        {tabs.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: '8px 24px',
-              fontSize: '13px',
-              fontWeight: activeTab === tab ? 600 : 400,
-              border: 'none',
-              borderRadius: 'var(--radius-md)',
-              cursor: 'pointer',
-              transition: 'all 0.2s',
-              background: activeTab === tab ? 'var(--bg-surface)' : 'transparent',
-              color: activeTab === tab ? 'var(--brand)' : 'var(--fg-muted)',
-              boxShadow: activeTab === tab ? 'var(--shadow-sm)' : 'none'
-            }}
-          >
-            {tab}
-          </button>
-        ))}
       </div>
 
       <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
@@ -278,21 +341,12 @@ export default function StyleReplication() {
 
           <div style={{ marginBottom: '14px' }}>
             <label style={labelStyle}>补充提示词</label>
-            <div style={{ position: 'relative' }}>
-              <Textarea
-                value={prompt}
-                onChange={setPrompt}
-                placeholder="描述您希望的风格细节、特殊要求..."
-                rows={3}
-              />
-              <button
-                onClick={() => setAiModalOpen(true)}
-                style={aiWriteBtnStyle}
-              >
-                <Sparkles size={12} />
-                AI帮写
-              </button>
-            </div>
+            <Textarea
+              value={prompt}
+              onChange={setPrompt}
+              placeholder="例如：添加「限时特惠」文字，使用红色主题.."
+              rows={3}
+            />
           </div>
 
           <div style={{
@@ -309,7 +363,7 @@ export default function StyleReplication() {
             }}>
               <div>
                 <label style={labelStyle}>文案模型</label>
-                <Select
+                <SearchableSelect
                   value={form.textModel}
                   onChange={(v) => setForm((f) => ({ ...f, textModel: v }))}
                   options={textModelOptions}
@@ -318,7 +372,7 @@ export default function StyleReplication() {
               </div>
               <div>
                 <label style={labelStyle}>生图模型</label>
-                <Select
+                <SearchableSelect
                   value={form.imageModel}
                   onChange={(v) => setForm((f) => ({ ...f, imageModel: v }))}
                   options={imageModelOptions}
@@ -366,36 +420,13 @@ export default function StyleReplication() {
                   options={[
                     { value: '1', label: '1 张' },
                     { value: '2', label: '2 张' },
-                    { value: '4', label: '4 张' }
+                    { value: '4', label: '4 张' },
+                    { value: '6', label: '6 张' },
+                    { value: '8', label: '8 张' },
+                    { value: '10', label: '10 张' }
                   ]}
                   placeholder="选择数量"
                 />
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '4px' }}>
-              <label style={labelStyle}>生成速度</label>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                {speeds.map((s) => (
-                  <button
-                    key={s.key}
-                    onClick={() => setSpeed(s.key)}
-                    style={{
-                      flex: 1,
-                      padding: '7px 0',
-                      fontSize: '12px',
-                      fontWeight: speed === s.key ? 600 : 400,
-                      border: speed === s.key ? '1px solid var(--brand)' : '1px solid var(--border)',
-                      borderRadius: 'var(--radius-full)',
-                      cursor: 'pointer',
-                      background: speed === s.key ? 'var(--brand-glow)' : 'transparent',
-                      color: speed === s.key ? 'var(--brand)' : 'var(--fg-muted)',
-                      transition: 'all 0.2s'
-                    }}
-                  >
-                    {s.label}
-                  </button>
-                ))}
               </div>
             </div>
           </div>
@@ -512,73 +543,15 @@ export default function StyleReplication() {
         </div>
       </div>
 
-      <div className="anim-stagger" style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: '16px',
-        marginTop: '24px'
-      }}>
-        {features.map((feat) => {
-          const Icon = feat.icon
-          return (
-            <div
-              key={feat.title}
-              className="anim-card"
-              style={{
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-lg)',
-                padding: '20px',
-                textAlign: 'center'
-              }}
-            >
-              <div style={{
-                width: '44px',
-                height: '44px',
-                borderRadius: 'var(--radius-lg)',
-                background: 'var(--brand-glow)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                margin: '0 auto 12px'
-              }}>
-                <Icon size={22} style={{ color: 'var(--brand)' }} />
-              </div>
-              <h3 style={{
-                fontSize: '14px',
-                fontWeight: 600,
-                color: 'var(--fg)',
-                margin: '0 0 6px 0'
-              }}>
-                {feat.title}
-              </h3>
-              <p style={{
-                fontSize: '12px',
-                color: 'var(--fg-muted)',
-                margin: 0,
-                lineHeight: '1.6'
-              }}>
-                {feat.desc}
-              </p>
-            </div>
-          )
-        })}
-      </div>
-
-      <AiWriteModal
-        open={aiModalOpen}
-        onClose={() => setAiModalOpen(false)}
-        onApply={(text) => {
-          setPrompt(text)
-          setAiModalOpen(false)
-        }}
-        productImages={[
-          ...refImages.map(img => img.dataUrl),
-          ...productImages.map(img => img.dataUrl),
-        ]}
-        productInfo={prompt}
-        context=""
-      />
+      {/* 错误弹窗 */}
+      {errorModal && (
+        <ErrorModal
+          open
+          title={errorModal.title}
+          message={errorModal.message}
+          onClose={() => setErrorModal(null)}
+        />
+      )}
 
       {/* Image preview overlay */}
       {previewUrl && (
@@ -640,23 +613,6 @@ const labelStyle: React.CSSProperties = {
   fontWeight: 600,
   color: 'var(--fg-secondary)',
   marginBottom: '6px'
-}
-
-const aiWriteBtnStyle: React.CSSProperties = {
-  position: 'absolute',
-  right: '8px',
-  bottom: '8px',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '4px',
-  padding: '4px 10px',
-  fontSize: '11px',
-  fontWeight: 600,
-  color: 'var(--brand)',
-  background: 'var(--brand-glow)',
-  border: '1px solid var(--brand)',
-  borderRadius: 'var(--radius-full)',
-  cursor: 'pointer'
 }
 
 const removeBtnStyle: React.CSSProperties = {

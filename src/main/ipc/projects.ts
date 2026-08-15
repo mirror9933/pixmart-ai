@@ -106,25 +106,49 @@ export function registerProjectsHandlers(): void {
         for (const id of orphanIds) {
           db.run('DELETE FROM projects WHERE id = ?', [id])
         }
-        saveDatabase()
         logger.info(`Cleaned up ${orphanIds.length} orphaned project records`)
       }
 
-      // Sync image counts from disk for existing projects
+      // Sync image counts & output_images from disk for existing projects.
+      // 历史 bug 修复:saveImageFromDataUrl 曾因 sql.js Statement.get() 用法错误导致
+      // output_images 只保留最后一张;这里把磁盘上存在但未记录的文件补回记录,
+      // 保证旧项目详情页能显示全部已保存的图片。
+      let dbDirty = orphanIds.length > 0
       for (const row of rows) {
         if (!existingIds.has(row.id)) continue
         const imgDir = path.join(projectsDir, row.id, 'images')
-        let actualCount = 0
+        let diskFiles: string[] = []
         try {
           if (fs.existsSync(imgDir)) {
-            actualCount = fs.readdirSync(imgDir).filter(f => /\.(png|jpe?g|webp)$/i.test(f)).length
+            diskFiles = fs.readdirSync(imgDir).filter(f => /\.(png|jpe?g|webp)$/i.test(f))
           }
         } catch {}
-        if (actualCount !== row.image_count) {
-          db.run('UPDATE projects SET image_count = ?, updated_at = ? WHERE id = ?',
-            [actualCount, new Date().toISOString().replace('T', ' ').slice(0, 19), row.id])
+
+        let outputImages: string[] = []
+        try {
+          const parsed = JSON.parse(row.output_images)
+          if (Array.isArray(parsed)) outputImages = parsed.filter((x): x is string => typeof x === 'string')
+        } catch {}
+
+        // 保留仍存在于磁盘的记录(按文件名去重),并补上磁盘有但未记录的文件(统一 images/ 前缀)
+        const recordedNames = new Set<string>()
+        const kept: string[] = []
+        for (const rel of outputImages) {
+          const name = path.basename(rel)
+          if (diskFiles.includes(name) && !recordedNames.has(name)) {
+            recordedNames.add(name)
+            kept.push(`images/${name}`)
+          }
+        }
+        const merged = [...kept, ...diskFiles.filter(f => !recordedNames.has(f)).map(f => `images/${f}`)]
+
+        if (merged.length !== outputImages.length || merged.length !== row.image_count) {
+          db.run('UPDATE projects SET output_images = ?, image_count = ?, updated_at = ? WHERE id = ?',
+            [JSON.stringify(merged), merged.length, new Date().toISOString().replace('T', ' ').slice(0, 19), row.id])
+          dbDirty = true
         }
       }
+      if (dbDirty) saveDatabase()
 
       return rows.filter(r => existingIds.has(r.id)).map(parseProject)
     } catch (error) {

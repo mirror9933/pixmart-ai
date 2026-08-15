@@ -1,9 +1,11 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { ipcMain, dialog, BrowserWindow, app } from 'electron'
 import fs from 'fs'
 import path from 'path'
+import archiver from 'archiver'
+import extract from 'extract-zip'
 import { getDb, saveDatabase } from '../database'
 import { logger } from '../utils/logger'
-import { ensureDir } from '../utils/paths'
+import { ensureDir, getProjectsPath } from '../utils/paths'
 
 interface BackupData {
   app: string
@@ -70,16 +72,79 @@ export function collectBackupData(): BackupData {
   }
 }
 
-/** Write a backup JSON file to the given path. */
-export function writeBackupFile(targetPath: string): { settings: number; modelConfigs: number; projects: number } {
+/** 项目图片目录(优先设置中的自定义路径,否则默认) */
+function getActualProjectsDir(): string {
+  const custom = getSetting('path_projects')
+  return custom && fs.existsSync(custom) ? custom : getProjectsPath()
+}
+
+/** 统计项目图片文件夹数(仅用于导出提示) */
+function countProjectFolders(): number {
+  const dir = getActualProjectsDir()
+  try {
+    if (!fs.existsSync(dir)) return 0
+    return fs.readdirSync(dir).length
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * 写入备份 zip(backup.json + projects/ 项目图片目录)
+ * zip 结构:
+ *   backup.json           数据库备份(设置/模型/项目记录)
+ *   projects/             项目图片目录(每个项目一个子文件夹)
+ */
+export async function writeBackupFile(targetPath: string): Promise<{ settings: number; modelConfigs: number; projects: number; images: number }> {
   const data = collectBackupData()
   ensureDir(path.dirname(targetPath))
-  fs.writeFileSync(targetPath, JSON.stringify(data, null, 2), 'utf-8')
+  const tmpJson = targetPath + '.tmp.json'
+  fs.writeFileSync(tmpJson, JSON.stringify(data, null, 2), 'utf-8')
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const output = fs.createWriteStream(targetPath)
+      const archive = archiver('zip', { zlib: { level: 9 } })
+      output.on('close', () => resolve())
+      output.on('error', reject)
+      archive.on('error', reject)
+      archive.pipe(output)
+      archive.file(tmpJson, { name: 'backup.json' })
+      const projectsDir = getActualProjectsDir()
+      if (fs.existsSync(projectsDir)) {
+        archive.directory(projectsDir, 'projects')
+      }
+      archive.finalize()
+    })
+  } finally {
+    try { fs.unlinkSync(tmpJson) } catch {}
+  }
+  const images = countProjectFolders()
+  logger.info(`Backup zip written: ${targetPath} (settings=${data.settings.length}, models=${data.modelConfigs.length}, projects=${data.projects.length}, imageDirs=${images})`)
   return {
     settings: data.settings.length,
     modelConfigs: data.modelConfigs.length,
-    projects: data.projects.length
+    projects: data.projects.length,
+    images
   }
+}
+
+/** 恢复项目图片:把 zip 解压出的 projects/ 目录复制回当前项目目录(失败不影响数据库恢复) */
+function restoreProjectImages(imagesSrcDir: string): number {
+  const dest = getActualProjectsDir()
+  let restored = 0
+  try {
+    if (fs.existsSync(imagesSrcDir)) {
+      ensureDir(dest)
+      for (const entry of fs.readdirSync(imagesSrcDir)) {
+        fs.cpSync(path.join(imagesSrcDir, entry), path.join(dest, entry), { recursive: true })
+        restored++
+      }
+      logger.info(`Project images restored: ${restored} project folder(s) -> ${dest}`)
+    }
+  } catch (e) {
+    logger.error('Failed to restore project images:', e)
+  }
+  return restored
 }
 
 /** Restore backup data into the database (upsert, keeps existing records). */
@@ -194,27 +259,29 @@ export function restoreBackupData(data: BackupData): { settings: number; modelCo
 /** Start the auto-backup scheduler (checks every 30 seconds). */
 export function startAutoBackup(): void {
   setInterval(() => {
-    try {
-      const enabled = getSetting('backup_enabled') === 'true'
-      if (!enabled) return
-      const time = getSetting('backup_time') || '09:00'
-      const dir = getSetting('backup_dir')
-      if (!dir || !fs.existsSync(dir)) return
+    ;(async () => {
+      try {
+        const enabled = getSetting('backup_enabled') === 'true'
+        if (!enabled) return
+        const time = getSetting('backup_time') || '09:00'
+        const dir = getSetting('backup_dir')
+        if (!dir || !fs.existsSync(dir)) return
 
-      const nowDate = new Date()
-      const hhmm = `${String(nowDate.getHours()).padStart(2, '0')}:${String(nowDate.getMinutes()).padStart(2, '0')}`
-      if (hhmm !== time) return
+        const nowDate = new Date()
+        const hhmm = `${String(nowDate.getHours()).padStart(2, '0')}:${String(nowDate.getMinutes()).padStart(2, '0')}`
+        if (hhmm !== time) return
 
-      const today = nowDate.toISOString().slice(0, 10)
-      if (getSetting('backup_last_date') === today) return
+        const today = nowDate.toISOString().slice(0, 10)
+        if (getSetting('backup_last_date') === today) return
 
-      const file = path.join(dir, `pixmart-backup-${today}.json`)
-      const result = writeBackupFile(file)
-      setSetting('backup_last_date', today)
-      logger.info(`Auto backup completed: ${file} (${JSON.stringify(result)})`)
-    } catch (error) {
-      logger.error('Auto backup failed:', error)
-    }
+        const file = path.join(dir, `pixmart-backup-${today}.zip`)
+        const result = await writeBackupFile(file)
+        setSetting('backup_last_date', today)
+        logger.info(`Auto backup completed: ${file} (${JSON.stringify(result)})`)
+      } catch (error) {
+        logger.error('Auto backup failed:', error)
+      }
+    })()
   }, 30 * 1000)
 }
 
@@ -247,19 +314,19 @@ export function registerBackupHandlers(): void {
   ipcMain.handle('backup:export', async (event) => {
     try {
       const win = BrowserWindow.fromWebContents(event.sender)
-      const defaultName = `pixmart-backup-${new Date().toISOString().slice(0, 10)}.json`
+      const defaultName = `pixmart-backup-${new Date().toISOString().slice(0, 10)}.zip`
       const result = win
         ? await dialog.showSaveDialog(win, {
-            title: '导出配置备份',
+            title: '导出备份',
             defaultPath: defaultName,
-            filters: [{ name: 'Pixmart 备份', extensions: ['json'] }]
+            filters: [{ name: 'Pixmart 备份', extensions: ['zip'] }]
           })
         : { canceled: true, filePath: '' }
 
       if (result.canceled || !result.filePath) return { success: false, canceled: true }
 
-      const counts = writeBackupFile(result.filePath)
-      logger.info(`Backup exported: ${result.filePath}`)
+      const counts = await writeBackupFile(result.filePath)
+      logger.info(`Backup exported: ${result.filePath} (${JSON.stringify(counts)})`)
       return { success: true, path: result.filePath, counts }
     } catch (error) {
       logger.error('Failed to export backup:', error)
@@ -268,31 +335,46 @@ export function registerBackupHandlers(): void {
   })
 
   ipcMain.handle('backup:import', async (event) => {
+    const extractDir = path.join(app.getPath('temp'), `pixmart-restore-${Date.now()}`)
     try {
       const win = BrowserWindow.fromWebContents(event.sender)
       const result = win
         ? await dialog.showOpenDialog(win, {
-            title: '导入配置备份',
-            filters: [{ name: 'Pixmart 备份', extensions: ['json'] }],
+            title: '导入备份',
+            filters: [{ name: 'Pixmart 备份', extensions: ['zip'] }],
             properties: ['openFile']
           })
         : { canceled: true, filePaths: [] }
 
       if (result.canceled || !result.filePaths?.[0]) return { success: false, canceled: true }
 
-      const filePath = result.filePaths[0]
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as BackupData
+      const zipPath = result.filePaths[0]
+      // 解压备份 zip(backup.json + projects/)
+      await extract(zipPath, { dir: extractDir })
 
+      const jsonPath = path.join(extractDir, 'backup.json')
+      if (!fs.existsSync(jsonPath)) {
+        return { success: false, error: '备份文件格式不正确（缺少 backup.json）' }
+      }
+      const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8')) as BackupData
       if (raw.app !== BACKUP_APP) {
         return { success: false, error: '不是有效的 Pixmart 备份文件' }
       }
 
       const counts = restoreBackupData(raw)
-      logger.info(`Backup imported: ${filePath} (${JSON.stringify(counts)})`)
-      return { success: true, path: filePath, counts }
+      // 恢复项目图片(zip 内的 projects/ 目录;旧备份可能没有)
+      const images = restoreProjectImages(path.join(extractDir, 'projects'))
+      logger.info(`Backup imported: ${zipPath} (${JSON.stringify(counts)}, images=${images})`)
+      return {
+        success: true,
+        path: zipPath,
+        counts: { ...counts, images }
+      }
     } catch (error) {
       logger.error('Failed to import backup:', error)
       return { success: false, error: (error as Error).message }
+    } finally {
+      try { fs.rmSync(extractDir, { recursive: true, force: true }) } catch {}
     }
   })
 }

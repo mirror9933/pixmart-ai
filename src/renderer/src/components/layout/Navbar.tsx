@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { Bell, Settings } from 'lucide-react'
+import { Settings } from 'lucide-react'
 import ThemeToggle from '@/components/ui/ThemeToggle'
 
 const navItems = [
@@ -89,38 +89,6 @@ export function Navbar() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <button
-            style={{
-              position: 'relative',
-              width: '40px',
-              height: '40px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 'var(--radius-md)',
-              border: 'none',
-              backgroundColor: 'transparent',
-              color: 'var(--fg-muted)',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-            }}
-            aria-label="通知"
-          >
-            <Bell size={20} />
-            <span
-              style={{
-                position: 'absolute',
-                top: '8px',
-                right: '8px',
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                backgroundColor: '#ef4444',
-                border: '2px solid var(--bg-surface)',
-              }}
-            />
-          </button>
-
           <Link
             to="/settings"
             style={{

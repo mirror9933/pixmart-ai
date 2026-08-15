@@ -4,6 +4,7 @@ import { logger } from '../utils/logger'
 import { createProvider, type ModelConfig } from '../services/ai-provider'
 import type { ChatContentPart } from '../services/ai-provider'
 import { taskQueue } from '../services/task-queue'
+import { checkSizeSupported } from '../services/size-capabilities'
 import fs from 'fs'
 import path from 'path'
 
@@ -154,15 +155,13 @@ export function registerAIHandlers(): void {
       })
 
       const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
-      db.prepare(`
+      const s = db.prepare(`
         UPDATE projects
         SET status = 'analyzed', status_label = '已分析', description = ?, updated_at = ?
         WHERE id = ?
-      `).run(
-        result.description || data.description,
-        now,
-        data.projectId
-      )
+      `)
+      s.run([result.description || data.description, now, data.projectId])
+      s.free()
 
       logger.info(`Product analysis completed: project=${data.projectId} keywords=${result.keywords?.length || 0} plans=${result.designPlan?.length || 0}`)
       return result
@@ -219,9 +218,11 @@ export function registerAIHandlers(): void {
 
       const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
 
-      db.prepare(`
+      const s0 = db.prepare(`
         UPDATE projects SET status = 'processing', status_label = '生成中', updated_at = ? WHERE id = ?
-      `).run(now, data.projectId)
+      `)
+      s0.run([now, data.projectId])
+      s0.free()
 
       const win = require('electron').BrowserWindow.getAllWindows()[0]
       const taskIds: string[] = []
@@ -247,10 +248,44 @@ export function registerAIHandlers(): void {
         taskIds.push(taskId)
       }
 
-      taskQueue.onTaskUpdate((task) => {
+      // 监听本批次任务:全部进入终态后更新项目状态(completed/failed)并注销监听器,
+      // 避免项目停留在"生成中",同时防止监听器随每次生成累积泄漏。
+      const unsub = taskQueue.onTaskUpdate((task) => {
         if (win && !win.isDestroyed()) {
           win.webContents.send('ai:taskUpdate', task)
         }
+        if (!taskIds.includes(task.id)) return
+        const isTerminal = task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'
+        if (!isTerminal) return
+
+        const anyActive = taskIds.some(id => {
+          const t = taskQueue.getTask(id)
+          return t && t.status !== 'completed' && t.status !== 'failed' && t.status !== 'cancelled'
+        })
+        if (anyActive) return
+
+        try {
+          const db = getDb()
+          const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
+          const hasSuccess = taskIds.some(id => {
+            const t = taskQueue.getTask(id)
+            return t && t.status === 'completed'
+          })
+          const failedTask = taskIds.map(id => taskQueue.getTask(id)).find(t => t && t.status === 'failed')
+          if (hasSuccess) {
+            const s = db.prepare(`UPDATE projects SET status = 'completed', status_label = '完成', error_message = NULL, updated_at = ? WHERE id = ?`)
+            s.run([now, data.projectId])
+            s.free()
+          } else if (failedTask) {
+            const s = db.prepare(`UPDATE projects SET status = 'failed', status_label = '失败', error_message = ?, updated_at = ? WHERE id = ?`)
+            s.run([failedTask.error || '生成失败', now, data.projectId])
+            s.free()
+          }
+          saveDatabase()
+        } catch (e) {
+          logger.error('Failed to update project status after tasks finished:', e)
+        }
+        unsub()
       })
 
       logger.info(`Image generation tasks submitted: project=${data.projectId} tasks=${taskIds.length}`)
@@ -266,15 +301,13 @@ export function registerAIHandlers(): void {
       try {
         const db = getDb()
         const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
-        db.prepare(`
+        const s = db.prepare(`
           UPDATE projects
           SET status = 'failed', status_label = '失败', error_message = ?, updated_at = ?
           WHERE id = ?
-        `).run(
-          error instanceof Error ? error.message : 'Unknown error',
-          now,
-          data.projectId
-        )
+        `)
+        s.run([error instanceof Error ? error.message : 'Unknown error', now, data.projectId])
+        s.free()
       } catch {
         // ignore
       }
@@ -431,5 +464,18 @@ ${data.context || '电商平台'}
   ipcMain.handle('ai:getTaskStatus', async (_event, taskId: string) => {
     const task = taskQueue.getTask(taskId)
     return task || null
+  })
+
+  // 生成前尺寸校验:按模型尺寸能力表判断,明确不支持时由前端弹窗提示(未知模型放行)
+  ipcMain.handle('ai:checkSize', async (_event, data: { model?: string; size?: string }) => {
+    try {
+      if (!data?.model || !data?.size) {
+        return { known: false, supported: true }
+      }
+      return checkSizeSupported(data.model, data.size)
+    } catch (error) {
+      logger.error('Failed to check size:', error)
+      return { known: false, supported: true }
+    }
   })
 }

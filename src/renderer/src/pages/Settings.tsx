@@ -51,7 +51,11 @@ export default function Settings() {
   const [activeSection, setActiveSection] = useState<SidebarKey>('advanced')
   const [aboutFlipped, setAboutFlipped] = useState(false)
   const [wechatCopied, setWechatCopied] = useState(false)
-  const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'available' | 'latest'>('idle')
+  const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'available' | 'latest' | 'error' | 'downloading' | 'downloaded'>('idle')
+  const [updateProgress, setUpdateProgress] = useState(0)
+  const [updateError, setUpdateError] = useState('')
+  const [updateVersion, setUpdateVersion] = useState('')
+  const [appVersion, setAppVersion] = useState('')
 
   const handleCopyWechat = async () => {
     try {
@@ -61,26 +65,68 @@ export default function Settings() {
     } catch {}
   }
 
-  const handleCheckUpdate = async () => {
-    if (updateState === 'checking') return
-    setUpdateState('checking')
-    try {
-      // TODO: 接入真实更新源（如请求更新服务器版本号接口），有新版本时置为 true
-      const hasNewVersion = false
-      if (hasNewVersion) {
-        setUpdateState('available')
-      } else {
-        setUpdateState('latest')
-        setTimeout(() => setUpdateState('idle'), 2500)
+  // 监听主进程更新状态事件(检查/下载进度/下载完成等)
+  useEffect(() => {
+    const unsub = window.api.updater.onStatus((s: any) => {
+      switch (s?.status) {
+        case 'checking':
+          setUpdateState('checking')
+          break
+        case 'available':
+          setUpdateState('available')
+          setUpdateVersion(s.payload?.version || '')
+          break
+        case 'not-available':
+          setUpdateState('latest')
+          setTimeout(() => setUpdateState('idle'), 3000)
+          break
+        case 'error':
+          setUpdateState('error')
+          setUpdateError(s.payload?.message || '更新出错')
+          break
+        case 'progress':
+          setUpdateState('downloading')
+          setUpdateProgress(s.payload?.percent || 0)
+          break
+        case 'downloaded':
+          setUpdateState('downloaded')
+          setUpdateVersion(s.payload?.version || '')
+          break
       }
-    } catch {
-      setUpdateState('idle')
+    })
+    window.api.updater.getState().then((st: any) => {
+      if (st) {
+        setAppVersion(st.version || '')
+        if (!st.isPackaged) {
+          setUpdateError('开发模式不支持在线更新（打包安装后可正常检查）')
+        }
+      }
+    }).catch(() => {})
+    return unsub
+  }, [])
+
+  const handleCheckUpdate = async () => {
+    if (updateState === 'checking' || updateState === 'downloading' || updateState === 'downloaded') return
+    setUpdateError('')
+    const res = await window.api.updater.check()
+    if (!res?.success) {
+      setUpdateState('error')
+      setUpdateError(res?.error || '检查更新失败')
     }
+    // 检查成功后的状态由主进程事件驱动
   }
 
-  const handleDownloadUpdate = () => {
-    // TODO: 接入真实下载更新逻辑
-    alert('下载更新功能即将上线')
+  const handleDownloadUpdate = async () => {
+    const res = await window.api.updater.download()
+    if (!res?.success) {
+      setUpdateState('error')
+      setUpdateError(res?.error || '下载更新失败')
+    }
+    // 下载进度由主进程事件驱动
+  }
+
+  const handleQuitAndInstall = () => {
+    window.api.updater.quitAndInstall()
   }
   const [showApiKey, setShowApiKey] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; latency: number } | null>(null)
@@ -117,7 +163,7 @@ export default function Settings() {
       const result = await window.api.backup.export()
       if (result.canceled) return
       if (result.success) {
-        setBackupMsg({ type: 'success', text: `已导出备份：${result.path}` })
+        setBackupMsg({ type: 'success', text: `已导出备份：${result.path}${result.counts?.images ? `（含 ${result.counts.images} 个项目图片文件夹）` : ''}` })
       } else {
         setBackupMsg({ type: 'error', text: `导出失败：${result.error || '未知错误'}` })
       }
@@ -155,7 +201,7 @@ export default function Settings() {
       if (result.canceled) return
       if (result.success) {
         const c = result.counts || {}
-        setBackupMsg({ type: 'success', text: `已还原：设置 ${c.settings ?? 0} 项、模型 ${c.modelConfigs ?? 0} 个、项目 ${c.projects ?? 0} 条` })
+        setBackupMsg({ type: 'success', text: `已还原：设置 ${c.settings ?? 0} 项、模型 ${c.modelConfigs ?? 0} 个、项目 ${c.projects ?? 0} 条${c.images ? `、图片文件夹 ${c.images} 个` : '（该备份不含项目图片）'}` })
         // 导入后刷新内存中的数据，使界面立即反映还原结果
         fetchConfigs()
         loadPaths()
@@ -778,7 +824,7 @@ export default function Settings() {
                   fontSize: '11px',
                   color: 'var(--fg-muted)'
                 }}>
-                  {pathsPlatform === 'mac' ? '🍎 macOS' : '🪟 Windows'}
+                  {pathsPlatform === 'mac' ? 'macOS' : 'Windows'}
                 </span>
               </div>
 
@@ -1161,18 +1207,50 @@ export default function Settings() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '24px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <BrandLogo size={120} />
-                <HoloVersion text="v1.0.0" />
+                <HoloVersion text={`v${appVersion || '1.0.0'}`} />
               </div>
-              <div style={{ display: 'flex', gap: '16px' }}>
-                <UpdateButton
-                  text={
-                    updateState === 'checking' ? '检查中...'
-                      : updateState === 'available' ? '下载更新'
-                      : updateState === 'latest' ? '已是最新版本'
-                      : '检查更新'
-                  }
-                  onClick={updateState === 'available' ? handleDownloadUpdate : handleCheckUpdate}
-                />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                  <UpdateButton
+                    text={
+                      updateState === 'checking' ? '检查中...'
+                        : updateState === 'available' ? '下载更新'
+                        : updateState === 'downloading' ? `下载中 ${updateProgress}%`
+                        : updateState === 'downloaded' ? '立即重启安装'
+                        : updateState === 'latest' ? '已是最新版本'
+                        : updateState === 'error' ? '重试检查'
+                        : '检查更新'
+                    }
+                    onClick={
+                      updateState === 'available' ? handleDownloadUpdate
+                        : updateState === 'downloaded' ? handleQuitAndInstall
+                        : handleCheckUpdate
+                    }
+                  />
+                  {updateState === 'downloaded' && updateVersion && (
+                    <span style={{ fontSize: '12px', color: 'var(--fg-muted)' }}>
+                      新版本 v{updateVersion} 已下载
+                    </span>
+                  )}
+                </div>
+                {/* 下载进度条 */}
+                {updateState === 'downloading' && (
+                  <div style={{
+                    width: '220px', height: '6px', borderRadius: '3px',
+                    background: 'var(--bg-muted)', overflow: 'hidden'
+                  }}>
+                    <div style={{
+                      height: '100%', width: `${updateProgress}%`,
+                      background: 'var(--brand)', borderRadius: '3px',
+                      transition: 'width 0.2s ease'
+                    }} />
+                  </div>
+                )}
+                {updateError && (
+                  <span style={{ fontSize: '11px', color: 'var(--danger)', maxWidth: '260px' }}>
+                    {updateError}
+                  </span>
+                )}
               </div>
             </div>
 

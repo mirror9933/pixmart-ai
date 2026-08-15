@@ -11,6 +11,7 @@ import { registerFilesHandlers, clearTempState } from './ipc/files'
 import { registerAIHandlers } from './ipc/ai'
 import { registerPathsHandlers } from './ipc/paths'
 import { registerBackupHandlers, startAutoBackup } from './ipc/backup'
+import { registerUpdaterHandlers, checkForUpdatesOnStartup } from './services/updater'
 
 const isDev = !app.isPackaged
 
@@ -94,6 +95,7 @@ function registerAllHandlers(): void {
   registerAIHandlers()
   registerPathsHandlers()
   registerBackupHandlers()
+  registerUpdaterHandlers()
   startAutoBackup()
   logger.info('All IPC handlers registered')
 }
@@ -112,6 +114,9 @@ app.whenReady().then(async () => {
   registerAllHandlers()
 
   createWindow()
+
+  // 启动后静默检查更新(仅打包环境)
+  checkForUpdatesOnStartup()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
