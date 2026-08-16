@@ -53,19 +53,19 @@ const MIRROR_DOWNLOAD_CODE = '7kG5'
 
 /** 厂商 logo(本地 SVG,离线可用;自定义厂商用图标占位) */
 const VENDOR_LOGOS: Record<string, string> = {
-  openai: '/vendor-logo/openai.svg',
-  anthropic: '/vendor-logo/anthropic.svg',
-  google: '/vendor-logo/google.svg',
-  openrouter: '/vendor-logo/openrouter.svg',
-  agnes: '/vendor-logo/agnes.svg',
-  ofox: '/vendor-logo/ofox.svg',
-  aihubmix: '/vendor-logo/aihubmix.svg',
-  siliconflow: '/vendor-logo/siliconflow.svg',
-  volcengine: '/vendor-logo/volcengine.svg',
-  bailian: '/vendor-logo/bailian.svg',
-  mimo: '/vendor-logo/mimo.svg',
-  kimi: '/vendor-logo/kimi.svg',
-  minimax: '/vendor-logo/minimax.svg'
+  openai: 'vendor-logo/openai.svg',
+  anthropic: 'vendor-logo/anthropic.svg',
+  google: 'vendor-logo/google.svg',
+  openrouter: 'vendor-logo/openrouter.svg',
+  agnes: 'vendor-logo/agnes.svg',
+  ofox: 'vendor-logo/ofox.svg',
+  aihubmix: 'vendor-logo/aihubmix.svg',
+  siliconflow: 'vendor-logo/siliconflow.svg',
+  volcengine: 'vendor-logo/volcengine.svg',
+  bailian: 'vendor-logo/bailian.svg',
+  mimo: 'vendor-logo/mimo.svg',
+  kimi: 'vendor-logo/kimi.svg',
+  minimax: 'vendor-logo/minimax.svg'
 }
 
 /** Ofox 推广注册链接(悬浮 Ofox 卡片弹窗跳转) */
