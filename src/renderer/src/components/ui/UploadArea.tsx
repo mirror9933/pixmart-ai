@@ -145,20 +145,6 @@ export function UploadArea({
         >
           {subtitle}
         </p>
-        {maxCount > 0 && (
-          <span
-            style={{
-              marginTop: '8px',
-              fontSize: '12px',
-              color: 'var(--fg-muted)',
-              padding: '2px 8px',
-              backgroundColor: 'var(--bg-surface)',
-              borderRadius: 'var(--radius-full)',
-            }}
-          >
-            {count}/{maxCount}
-          </span>
-        )}
       </div>
     </>
   )

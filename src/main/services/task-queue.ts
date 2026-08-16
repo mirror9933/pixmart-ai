@@ -21,7 +21,8 @@ class TaskQueue {
   private tasks: Map<string, Task> = new Map()
   private queue: string[] = []
   private runningCount = 0
-  private maxConcurrent = 3
+  /** 并发上限:4(避免触发 API QPS 限流) */
+  private maxConcurrent = 4
   private taskHandlers: Map<string, () => Promise<unknown>> = new Map()
   private listeners: Set<TaskCallback> = new Set()
 

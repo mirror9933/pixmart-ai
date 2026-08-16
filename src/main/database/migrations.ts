@@ -90,6 +90,10 @@ export function runMigrations(db: SqlJsDatabase): void {
       api_key TEXT NOT NULL DEFAULT '',
       base_url TEXT NOT NULL DEFAULT '',
       protocol TEXT NOT NULL DEFAULT 'openai',
+      org_id TEXT NOT NULL DEFAULT '',
+      headers TEXT NOT NULL DEFAULT '{}',
+      timeout INTEGER NOT NULL DEFAULT 0,
+      model_meta TEXT NOT NULL DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'untested',
       latency INTEGER NOT NULL DEFAULT 0,
       tested_at TEXT,
@@ -102,6 +106,20 @@ export function runMigrations(db: SqlJsDatabase): void {
   // 兼容旧库：为已存在的 model_configs 表补充 protocol 列
   try {
     db.exec(`ALTER TABLE model_configs ADD COLUMN protocol TEXT NOT NULL DEFAULT 'openai'`)
+  } catch {}
+
+  // 兼容旧库：补充高级配置列（组织ID/自定义请求头/请求超时/模型级元数据）
+  try {
+    db.exec(`ALTER TABLE model_configs ADD COLUMN org_id TEXT NOT NULL DEFAULT ''`)
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE model_configs ADD COLUMN headers TEXT NOT NULL DEFAULT '{}'`)
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE model_configs ADD COLUMN timeout INTEGER NOT NULL DEFAULT 0`)
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE model_configs ADD COLUMN model_meta TEXT NOT NULL DEFAULT '{}'`)
   } catch {}
 
   db.exec(`

@@ -169,14 +169,18 @@ export function restoreBackupData(data: BackupData): { settings: number; modelCo
   // Restore model configs (upsert by id)
   if (Array.isArray(data.modelConfigs)) {
     const stmt = db.prepare(`
-      INSERT INTO model_configs (id, vendor, vendor_label, api_key, base_url, protocol, status, latency, tested_at, models, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO model_configs (id, vendor, vendor_label, api_key, base_url, protocol, org_id, headers, timeout, model_meta, status, latency, tested_at, models, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         vendor = excluded.vendor,
         vendor_label = excluded.vendor_label,
         api_key = excluded.api_key,
         base_url = excluded.base_url,
         protocol = excluded.protocol,
+        org_id = excluded.org_id,
+        headers = excluded.headers,
+        timeout = excluded.timeout,
+        model_meta = excluded.model_meta,
         status = excluded.status,
         latency = excluded.latency,
         tested_at = excluded.tested_at,
@@ -192,6 +196,10 @@ export function restoreBackupData(data: BackupData): { settings: number; modelCo
         String(row.api_key ?? ''),
         String(row.base_url ?? ''),
         String(row.protocol ?? 'openai'),
+        String(row.org_id ?? ''),
+        typeof row.headers === 'string' ? row.headers : JSON.stringify(row.headers ?? {}),
+        Number(row.timeout ?? 0),
+        typeof row.model_meta === 'string' ? row.model_meta : JSON.stringify(row.model_meta ?? {}),
         String(row.status ?? 'untested'),
         Number(row.latency ?? 0),
         row.tested_at == null ? null : String(row.tested_at),

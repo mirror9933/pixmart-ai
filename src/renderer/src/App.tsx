@@ -5,6 +5,7 @@ import ProductImages from '@/pages/ProductImages'
 import BatchTasks from '@/pages/BatchTasks'
 import ConfirmPlan from '@/pages/ConfirmPlan'
 import StyleReplication from '@/pages/StyleReplication'
+import OtherTools from '@/pages/OtherTools'
 import ProjectHistory from '@/pages/ProjectHistory'
 import Settings from '@/pages/Settings'
 import LogViewer from '@/components/ui/LogViewer'
@@ -19,6 +20,7 @@ const router = createHashRouter(
       <Route path="batch-tasks" element={<BatchTasks />} />
       <Route path="confirm-plan" element={<ConfirmPlan />} />
       <Route path="style-replication" element={<StyleReplication />} />
+      <Route path="other-tools" element={<OtherTools />} />
       <Route path="project-history" element={<ProjectHistory />} />
       <Route path="settings" element={<Settings />} />
     </Route>

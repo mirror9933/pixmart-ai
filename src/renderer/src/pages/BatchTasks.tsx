@@ -658,7 +658,7 @@ export default function BatchTasks() {
               <div style={{ position: 'relative' }}>
                 <Textarea
                   value={task.description}
-                  onChange={(v) => updateTask(task.id, { description: v })}
+                  onChange={(e) => updateTask(task.id, { description: e.target.value })}
                   placeholder="建议输入：产品名称、卖点、目标人群、目标电商平台、图片风格等"
                   rows={2}
                 />
@@ -839,7 +839,7 @@ export default function BatchTasks() {
         }}
         productImages={tasks.find(t => t.id === aiWriteTargetId)?.images.map(img => img.dataUrl) || []}
         productInfo={tasks.find(t => t.id === aiWriteTargetId)?.description || ''}
-        context={aiWritePlatformLabel ? `目标平台：${aiWritePlatformLabel}` : ''}
+        context={aiWritePlatformLabel || ''}
         selectedModel={globalSettings.textModel}
       />
 

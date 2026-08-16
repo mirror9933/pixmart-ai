@@ -1,5 +1,5 @@
 import { app, ipcMain, BrowserWindow } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import { autoUpdater, ElectronHttpExecutor } from 'electron-updater'
 import { logger } from '../utils/logger'
 
 let initialized = false
@@ -13,9 +13,27 @@ function sendStatus(status: string, payload?: unknown): void {
   }
 }
 
+/** 尽量提取可读的错误信息(electron-updater 的错误对象有时是空对象) */
+function extractErrorMessage(err: unknown): string {
+  if (!err) return '更新出错'
+  if (err instanceof Error && err.message) return err.message
+  try {
+    const str = JSON.stringify(err)
+    if (str && str !== '{}') return str
+  } catch {}
+  return '更新出错'
+}
+
 function ensureInit(): void {
   if (initialized) return
   initialized = true
+  // 使用 Electron net 模块发起更新请求:自动走系统代理,
+  // 解决 Node 网络栈直连 GitHub 超时/被墙导致检查更新失败的问题
+  try {
+    autoUpdater.httpExecutor = new ElectronHttpExecutor()
+  } catch (e) {
+    logger.warn('ElectronHttpExecutor init failed, falling back to default:', e)
+  }
   // 发现更新后不自动下载,由用户在设置页点击"下载更新"
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
@@ -25,7 +43,7 @@ function ensureInit(): void {
   autoUpdater.on('update-not-available', (info) => sendStatus('not-available', info))
   autoUpdater.on('error', (err) => {
     logger.error('Auto updater error:', err)
-    sendStatus('error', { message: err?.message || '更新出错' })
+    sendStatus('error', { message: extractErrorMessage(err) })
   })
   autoUpdater.on('download-progress', (p) => {
     sendStatus('progress', {
@@ -48,7 +66,7 @@ export function registerUpdaterHandlers(): void {
       return { success: true }
     } catch (e: any) {
       logger.error('Failed to check for updates:', e)
-      return { success: false, error: e?.message || '检查更新失败' }
+      return { success: false, error: extractErrorMessage(e) }
     }
   })
 
@@ -59,7 +77,7 @@ export function registerUpdaterHandlers(): void {
       return { success: true }
     } catch (e: any) {
       logger.error('Failed to download update:', e)
-      return { success: false, error: e?.message || '下载更新失败' }
+      return { success: false, error: extractErrorMessage(e) }
     }
   })
 
@@ -82,10 +100,13 @@ export function checkForUpdatesOnStartup(): void {
   setTimeout(() => {
     try {
       ensureInit()
-      autoUpdater.checkForUpdates()
+      autoUpdater.checkForUpdates().catch((e) => {
+        // 防止 unhandled rejection(error 事件已推送 UI,此处仅记录)
+        logger.error('Startup update check failed:', e)
+      })
       logger.info('Auto update check started on startup')
     } catch (e) {
-      logger.error('Startup update check failed:', e)
+      logger.error('Startup update check exception:', e)
     }
   }, 10 * 1000)
 }

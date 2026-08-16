@@ -26,12 +26,21 @@ export class AnthropicProvider implements AIProvider {
     this.config = config
     this.client = new Anthropic({
       apiKey: config.api_key,
-      baseURL: config.base_url || undefined
+      baseURL: config.base_url || undefined,
+      // 自定义请求头 + 请求超时
+      defaultHeaders: (config.headers && Object.keys(config.headers).length > 0) ? config.headers : undefined,
+      timeout: config.timeout && config.timeout > 0 ? config.timeout * 1000 : undefined
     })
   }
 
   private getTextModel(): string {
     const models = this.config.models || []
+    // 优先使用用户手动标注:文本对话/图片理解模型均可用于分析
+    const tagged = models.find(m => {
+      const cap = this.config.model_meta?.[m]?.capability
+      return cap === 'text' || cap === 'vision'
+    })
+    if (tagged) return tagged
     const textModel = models.find(m => /claude|sonnet|haiku|opus/i.test(m))
       || models[0]
     if (textModel) return textModel
@@ -150,6 +159,8 @@ export class AnthropicProvider implements AIProvider {
 
   async chat(messages: ChatMessage[]): Promise<string> {
     const systemMsg = messages.find(m => m.role === 'system')
+    const textModel = this.getTextModel()
+    const maxOutput = this.config.model_meta?.[textModel]?.maxOutput
     const chatMessages = messages
       .filter(m => m.role !== 'system')
       .map(m => {
@@ -172,8 +183,8 @@ export class AnthropicProvider implements AIProvider {
       })
 
     const response = await this.client.messages.create({
-      model: this.getTextModel(),
-      max_tokens: 4000,
+      model: textModel,
+      max_tokens: maxOutput && maxOutput > 0 ? maxOutput : 4000,
       system: systemMsg?.content as string | undefined,
       messages: chatMessages as any
     })
@@ -182,24 +193,28 @@ export class AnthropicProvider implements AIProvider {
     return content.type === 'text' ? content.text : ''
   }
 
-  async testConnection(): Promise<{ success: boolean; latency: number }> {
+  async testConnection(): Promise<{ success: boolean; latency: number; error?: string }> {
     const start = Date.now()
     try {
       await this.client.models.list()
       return { success: true, latency: Date.now() - start }
     } catch (error: any) {
-      logger.error(`Anthropic connection test failed: ${extractError(error)}`)
-      return { success: false, latency: Date.now() - start }
+      const msg = extractError(error)
+      logger.error(`Anthropic connection test failed: ${msg}`)
+      return { success: false, latency: Date.now() - start, error: msg }
     }
   }
 
-  async fetchModels(): Promise<string[]> {
+  async fetchModels(): Promise<Array<{ id: string; name: string; description?: string; contextWindow?: number; maxOutput?: number }>> {
     try {
       const response = await this.client.models.list()
       const models = response.data
-        .map(m => m.id)
-        .filter(id => id.includes('claude'))
-        .sort()
+        .filter(m => m.id.includes('claude'))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map(m => ({
+          id: m.id,
+          name: m.id
+        }))
       return models
     } catch (error: any) {
       logger.error(`Failed to fetch Anthropic models: ${extractError(error)}`)
@@ -207,7 +222,7 @@ export class AnthropicProvider implements AIProvider {
         'claude-sonnet-4-20250514',
         'claude-3-5-haiku-20241022',
         'claude-3-opus-20240229'
-      ]
+      ].map(id => ({ id, name: id }))
     }
   }
 }

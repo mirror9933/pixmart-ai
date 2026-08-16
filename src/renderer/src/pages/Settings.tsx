@@ -1,18 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   FolderCog, Cpu, Sliders, Eye, EyeOff, RefreshCw, Check,
-  Plus, Trash2, Zap, TestTube, Server, ChevronRight,
+  Plus, Trash2, Zap, TestTube, Server, ChevronRight, Pencil,
   Settings2, FolderOpen, Image as ImageIcon, FileText, HardDrive,
-  Info, Sparkles
+  Info, Sparkles, Download, Copy
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Select from '@/components/ui/Select'
 import Toggle from '@/components/ui/Toggle'
 import Badge from '@/components/ui/Badge'
 import Checkbox from '@/components/ui/Checkbox'
+import Modal from '@/components/ui/Modal'
 import { useLogViewerStore } from '@/stores/useLogViewerStore'
 import { useModelStore } from '@/stores/useModelStore'
-import { VENDOR_INFO, PROTOCOL_INFO, type VendorType, type CustomProtocol, type ModelConfig, type ModelInfo } from '@/types/model'
+import { VENDOR_INFO, PROTOCOL_INFO, CAPABILITY_LABELS, type VendorType, type CustomProtocol, type ModelConfig, type ModelInfo, type ModelMeta, type ModelCapability } from '@/types/model'
 
 const sidebarItems = [
   { key: 'models', label: '模型管理', icon: Cpu },
@@ -43,12 +44,43 @@ const PATH_ICONS: Record<string, typeof FolderCog> = {
 
 type SidebarKey = (typeof sidebarItems)[number]['key']
 
+/** 网盘下载链接(安装包分享页/直链)。点击"网盘下载"弹窗确认后浏览器跳转 */
+const MIRROR_DOWNLOAD_URL = 'https://pan.quark.cn/s/bc5115bec115'
+/** 网盘提取码(弹窗中告知用户) */
+const MIRROR_DOWNLOAD_CODE = 'aAD9'
+
+/** 厂商 logo(本地 SVG,离线可用;自定义厂商用图标占位) */
+const VENDOR_LOGOS: Record<string, string> = {
+  openai: '/vendor-logo/openai.svg',
+  anthropic: '/vendor-logo/anthropic.svg',
+  google: '/vendor-logo/google.svg',
+  openrouter: '/vendor-logo/openrouter.svg',
+  agnes: '/vendor-logo/agnes.svg',
+  ofox: '/vendor-logo/ofox.svg',
+  aihubmix: '/vendor-logo/aihubmix.svg',
+  siliconflow: '/vendor-logo/siliconflow.svg',
+  volcengine: '/vendor-logo/volcengine.svg',
+  bailian: '/vendor-logo/bailian.svg',
+  mimo: '/vendor-logo/mimo.svg',
+  kimi: '/vendor-logo/kimi.svg',
+  minimax: '/vendor-logo/minimax.svg'
+}
+
+/** Ofox 推广注册链接(悬浮 Ofox 卡片弹窗跳转) */
+const OFOX_REFERRAL_URL = 'https://ofox.io/r/n8ebbc'
+
+/** MiMo 推广注册链接(悬浮 MiMo 卡片弹窗跳转,邀请码 6Q7WYQ) */
+const MIMO_REFERRAL_URL = 'https://platform.xiaomimimo.com?ref=6Q7WYQ'
+
+/** SiliconFlow 推荐官邀请链接(悬浮 SiliconFlow 卡片弹窗跳转) */
+const SILICONFLOW_REFERRAL_URL = 'https://cloud.siliconflow.cn/i/oGNJ2KSx'
+
 export default function Settings() {
   const {
     modelConfigs, fetchConfigs, addConfig, updateConfig, deleteConfig, testConnection, fetchModels, loading
   } = useModelStore()
 
-  const [activeSection, setActiveSection] = useState<SidebarKey>('advanced')
+  const [activeSection, setActiveSection] = useState<SidebarKey>('models')
   const [aboutFlipped, setAboutFlipped] = useState(false)
   const [wechatCopied, setWechatCopied] = useState(false)
   const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'available' | 'latest' | 'error' | 'downloading' | 'downloaded'>('idle')
@@ -56,6 +88,44 @@ export default function Settings() {
   const [updateError, setUpdateError] = useState('')
   const [updateVersion, setUpdateVersion] = useState('')
   const [appVersion, setAppVersion] = useState('')
+
+  // 真实版本号:从主进程读取(跟随 package.json version,发布新版本自动更新显示)
+  useEffect(() => {
+    window.api.app.getVersion().then((v: string) => setAppVersion(v)).catch(() => {})
+  }, [])
+  // 网盘下载提示(链接硬编码于 MIRROR_DOWNLOAD_URL,不在界面中配置)
+  const [mirrorMsg, setMirrorMsg] = useState('')
+  // 网盘跳转确认弹窗
+  const [mirrorConfirmOpen, setMirrorConfirmOpen] = useState(false)
+  // 提取码复制反馈
+  const [codeCopied, setCodeCopied] = useState(false)
+
+  const handleCopyMirrorCode = async () => {
+    try {
+      await navigator.clipboard.writeText(MIRROR_DOWNLOAD_CODE)
+      setCodeCopied(true)
+      setTimeout(() => setCodeCopied(false), 2000)
+    } catch {}
+  }
+
+  /** 点击网盘下载:弹窗确认(告知提取码)后浏览器跳转 */
+  const handleOpenMirror = () => {
+    if (!MIRROR_DOWNLOAD_URL) {
+      setMirrorMsg('网盘链接待配置，请等待后续版本提供')
+      setTimeout(() => setMirrorMsg(''), 3000)
+      return
+    }
+    setMirrorConfirmOpen(true)
+  }
+
+  const handleConfirmMirror = async () => {
+    setMirrorConfirmOpen(false)
+    const res = await window.api.paths.openExternal(MIRROR_DOWNLOAD_URL)
+    if (!res?.success) {
+      setMirrorMsg(res?.error || '打开网盘链接失败')
+      setTimeout(() => setMirrorMsg(''), 3000)
+    }
+  }
 
   const handleCopyWechat = async () => {
     try {
@@ -131,16 +201,77 @@ export default function Settings() {
   const [showApiKey, setShowApiKey] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; latency: number } | null>(null)
   const [modelStep, setModelStep] = useState(1)
+  const [hoveredVendor, setHoveredVendor] = useState<string | null>(null)
+  // 厂商卡片 hover 延迟关闭:鼠标从卡片上移到弹窗(经过间隙)时弹窗不消失
+  const vendorHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleVendorHoverEnter = (key: string) => {
+    if (vendorHoverTimer.current) clearTimeout(vendorHoverTimer.current)
+    setHoveredVendor(key)
+  }
+
+  const handleVendorHoverLeave = (key: string) => {
+    if (vendorHoverTimer.current) clearTimeout(vendorHoverTimer.current)
+    vendorHoverTimer.current = setTimeout(() => {
+      setHoveredVendor((cur) => (cur === key ? null : cur))
+    }, 200)
+  }
   const [newConfig, setNewConfig] = useState({
     vendor: '' as VendorType | '',
     protocol: 'openai' as CustomProtocol,
     customUrl: '',
     apiKey: '',
-    name: ''
+    name: '',
+    // 配置级高级选项(自定义厂商可用)
+    orgId: '',
+    timeout: '',
+    headersText: ''
   })
+  // 配置级高级选项校验错误(自定义请求头 JSON 解析失败时提示)
+  const [headersError, setHeadersError] = useState('')
+  // 正在编辑的配置(null = 新增模式)
+  const [editingConfig, setEditingConfig] = useState<ModelConfig | null>(null)
+  // 测试连接/获取模型失败时的具体错误信息
+  const [connError, setConnError] = useState('')
+  const [fetchError, setFetchError] = useState('')
+  // 待删除确认的配置(null = 无)
+  const [deleteTarget, setDeleteTarget] = useState<ModelConfig | null>(null)
+  const [guideOpen, setGuideOpen] = useState(false)
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set())
+  // 手动添加模型名输入
+  const [manualModel, setManualModel] = useState('')
+  // 模型级元数据编辑草稿(modelId -> 别名/能力/上下文/最大输出/备注)
+  const [metaDrafts, setMetaDrafts] = useState<Record<string, ModelMeta>>({})
+  // 展开"模型高级配置"的模型集合
+  const [expandedMeta, setExpandedMeta] = useState<Set<string>>(new Set())
   const [pendingConfigId, setPendingConfigId] = useState<string | null>(null)
+  // 供卸载清理使用的最新值(ref 避免闭包过期)
+  const pendingConfigIdRef = useRef<string | null>(null)
+  const editingConfigRef = useRef<ModelConfig | null>(null)
+  useEffect(() => {
+    pendingConfigIdRef.current = pendingConfigId
+  }, [pendingConfigId])
+  useEffect(() => {
+    editingConfigRef.current = editingConfig
+  }, [editingConfig])
+
+  /** 更新某个模型的元数据草稿 */
+  const updateMetaDraft = (modelId: string, patch: Partial<ModelMeta>) => {
+    setMetaDrafts((prev) => ({
+      ...prev,
+      [modelId]: { ...prev[modelId], ...patch }
+    }))
+  }
+
+  const toggleExpandMeta = (modelId: string) => {
+    setExpandedMeta((prev) => {
+      const next = new Set(prev)
+      if (next.has(modelId)) next.delete(modelId)
+      else next.add(modelId)
+      return next
+    })
+  }
 
   const [paths, setPaths] = useState<Record<string, { current: string; default: string }>>({})
   const [pathsLoading, setPathsLoading] = useState(true)
@@ -314,15 +445,51 @@ export default function Settings() {
     }
   }
 
+  /** 解析自定义请求头文本:合法 JSON 对象 -> 记录,否则返回 null(同时写入校验错误) */
+  const parseHeadersText = (): Record<string, string> | null => {
+    const text = newConfig.headersText.trim()
+    if (!text) return {}
+    try {
+      const parsed = JSON.parse(text)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        setHeadersError('请求头需为 JSON 对象，例如 { "X-Api-Key": "xxx" }')
+        return null
+      }
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v !== 'string') {
+          setHeadersError(`请求头 "${k}" 的值必须是字符串`)
+          return null
+        }
+      }
+      setHeadersError('')
+      return parsed as Record<string, string>
+    } catch {
+      setHeadersError('JSON 格式错误，请检查引号与逗号')
+      return null
+    }
+  }
+
   const ensurePendingConfig = async (): Promise<string> => {
+    // 编辑模式:直接使用被编辑配置的 id,不创建新配置
+    if (editingConfig) return editingConfig.id
     if (pendingConfigId) return pendingConfigId
+    const isCustom = newConfig.vendor === 'custom'
+    const headers = isCustom ? parseHeadersText() : {}
+    if (headers === null) throw new Error('自定义请求头格式错误')
     const config = await addConfig({
       vendor: newConfig.vendor as VendorType,
-      vendorLabel: VENDOR_INFO[newConfig.vendor as VendorType]?.label || '',
+      // 配置名称优先,缺省用厂商名(vendor_label 列即显示名)
+      vendorLabel: newConfig.name || VENDOR_INFO[newConfig.vendor as VendorType]?.label || '',
       apiKey: newConfig.apiKey,
-      baseUrl: newConfig.vendor === 'custom' ? newConfig.customUrl : VENDOR_INFO[newConfig.vendor as VendorType]?.defaultBaseUrl || '',
-      protocol: newConfig.vendor === 'custom' ? newConfig.protocol : undefined,
+      baseUrl: isCustom ? newConfig.customUrl : VENDOR_INFO[newConfig.vendor as VendorType]?.defaultBaseUrl || '',
+      protocol: isCustom ? newConfig.protocol : undefined,
       name: newConfig.name || VENDOR_INFO[newConfig.vendor as VendorType]?.label || '',
+      // 仅自定义厂商保存高级选项
+      ...(isCustom ? {
+        orgId: newConfig.orgId.trim(),
+        timeout: newConfig.timeout ? Math.max(0, parseInt(newConfig.timeout, 10) || 0) : 0,
+        headers
+      } : {}),
       models: [],
       defaultModel: '',
       isActive: false
@@ -331,47 +498,209 @@ export default function Settings() {
     return config.id
   }
 
+  /** 编辑模式下:把当前表单字段(不含模型/状态)先保存到被编辑配置,保证测试/获取用最新值 */
+  const syncEditFields = async () => {
+    if (!editingConfig) return
+    const isCustom = newConfig.vendor === 'custom'
+    const headers = isCustom ? parseHeadersText() : undefined
+    if (headers === null) throw new Error('自定义请求头格式错误')
+    await updateConfig(editingConfig.id, {
+      vendor: newConfig.vendor as VendorType,
+      vendorLabel: newConfig.name || VENDOR_INFO[newConfig.vendor as VendorType]?.label || '',
+      apiKey: newConfig.apiKey,
+      baseUrl: isCustom ? newConfig.customUrl : VENDOR_INFO[newConfig.vendor as VendorType]?.defaultBaseUrl || '',
+      protocol: isCustom ? newConfig.protocol : undefined,
+      name: newConfig.name || VENDOR_INFO[newConfig.vendor as VendorType]?.label || '',
+      ...(isCustom ? {
+        orgId: newConfig.orgId.trim(),
+        timeout: newConfig.timeout ? Math.max(0, parseInt(newConfig.timeout, 10) || 0) : 0,
+        headers
+      } : {})
+    })
+  }
+
   const handleTestConnection = async () => {
     setTestResult(null)
+    setConnError('')
     try {
+      await syncEditFields()
       const configId = await ensurePendingConfig()
       const result = await testConnection(configId)
+      if (!result.success && result.error) {
+        setConnError(result.error)
+      }
       setTestResult(result)
-    } catch (e) {
-      setTestResult(false)
+    } catch (e: any) {
+      setTestResult({ success: false, latency: 0 })
+      setConnError(e?.message || '未知错误')
       console.error(e)
     }
   }
 
   const handleFetchModels = async () => {
+    setFetchError('')
     try {
+      await syncEditFields()
       const configId = await ensurePendingConfig()
-      const models = await fetchModels(configId)
+      // 编辑模式:不覆盖数据库已保存模型列表(最终以「保存修改」为准)
+      const models = await fetchModels(configId, editingConfig ? { persist: false } : undefined)
       const modelList = (Array.isArray(models) ? models : []).map((m: any) => {
         if (typeof m === 'string') return { id: m, name: m }
         return m
       })
-      setAvailableModels(modelList)
-      setSelectedModels(new Set(modelList.map((m) => m.id)))
-    } catch (e) {
+      if (modelList.length === 0) {
+        setFetchError('未能获取模型列表（端点可能不支持 /models 接口），可点击下方「手动添加模型」直接输入模型名')
+      }
+      setAvailableModels((prev) => {
+        // 编辑模式:保留原有模型(端点返回的列表可能不含已保存模型)
+        const existing = editingConfig
+          ? [...new Set([...prev.map((m) => m.id), ...modelList.map((m) => m.id)])]
+            .map((id) => modelList.find((m) => m.id === id) || prev.find((m) => m.id === id) || { id, name: id })
+          : modelList
+        return existing
+      })
+      setSelectedModels((prev) => {
+        // 编辑模式:保留原有勾选;新增模式:默认不自动全选,由用户手动勾选需要的模型
+        return new Set(editingConfig ? prev : [])
+      })
+      // 自动回填模型元数据草稿:端点返回的 contextWindow 直接带入(不覆盖已填的别名/能力/备注)
+      setMetaDrafts((prev) => {
+        const drafts: Record<string, ModelMeta> = { ...prev }
+        for (const m of modelList) {
+          drafts[m.id] = {
+            ...(prev[m.id] || {}),
+            contextWindow: m.contextWindow ? Number(m.contextWindow) : (prev[m.id]?.contextWindow ?? undefined)
+          }
+        }
+        return drafts
+      })
+    } catch (e: any) {
+      setFetchError(e?.message || '获取模型列表失败，可点击下方「手动添加模型」直接输入模型名')
       console.error(e)
     }
   }
 
+  /** 手动添加模型:输入模型名加入列表并勾选(中转站无 /models 接口时的兜底) */
+  const handleManualAddModel = () => {
+    const name = manualModel.trim()
+    if (!name) return
+    if (!availableModels.some((m) => m.id === name)) {
+      setAvailableModels((prev) => [...prev, { id: name, name }])
+    }
+    setSelectedModels((prev) => {
+      const next = new Set(prev)
+      next.add(name)
+      return next
+    })
+    setManualModel('')
+  }
+
+  /** 打开编辑模式:预填全部字段并加载已有模型 */
+  const startEdit = (config: ModelConfig) => {
+    setEditingConfig(config)
+    setNewConfig({
+      vendor: config.vendor,
+      protocol: (config.protocol || 'openai') as CustomProtocol,
+      customUrl: config.baseUrl || '',
+      apiKey: config.apiKey,
+      name: config.name || '',
+      orgId: config.orgId || '',
+      timeout: config.timeout ? String(config.timeout) : '',
+      headersText: config.headers && Object.keys(config.headers).length > 0 ? JSON.stringify(config.headers, null, 2) : ''
+    })
+    setHeadersError('')
+    setConnError('')
+    setFetchError('')
+    setTestResult(null)
+    setModelStep(1)
+    // 加载已有模型到列表与草稿
+    const modelList = config.models.map((m) => ({ id: m, name: m }))
+    setAvailableModels(modelList)
+    setSelectedModels(new Set(config.models))
+    const drafts: Record<string, ModelMeta> = {}
+    for (const [mid, meta] of Object.entries((config as any).modelMeta || {})) {
+      drafts[mid] = { ...(meta as ModelMeta) }
+    }
+    setMetaDrafts(drafts)
+    setExpandedMeta(new Set())
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  /** 取消编辑/新增:清理临时状态;编辑模式不删除被编辑配置;keepPending=true 表示保存成功后调用,保留已保存配置 */
+  const cancelFlow = (keepPending = false) => {
+    if (!keepPending && !editingConfig && pendingConfigId) {
+      deleteConfig(pendingConfigId)
+    }
+    setPendingConfigId(null)
+    setEditingConfig(null)
+    setNewConfig({ vendor: '', customUrl: '', apiKey: '', name: '', protocol: 'openai', orgId: '', timeout: '', headersText: '' })
+    setHeadersError('')
+    setConnError('')
+    setFetchError('')
+    setModelStep(1)
+    setAvailableModels([])
+    setSelectedModels(new Set())
+    setMetaDrafts({})
+    setExpandedMeta(new Set())
+    setTestResult(null)
+    setManualModel('')
+  }
+
+  // 离开设置页时清理未完成的临时配置(新增流程中途退出产生的孤儿配置)
+  useEffect(() => {
+    return () => {
+      // 使用 ref 读取最新 pendingConfigId,避免闭包捕获过期值
+      if (pendingConfigIdRef.current && !editingConfigRef.current) {
+        deleteConfig(pendingConfigIdRef.current).catch(() => {})
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const handleAddConfig = async () => {
-    if (!pendingConfigId) return
+    const targetId = editingConfig ? editingConfig.id : pendingConfigId
+    if (!targetId) return
     try {
-      await updateConfig(pendingConfigId, {
+      const isCustom = newConfig.vendor === 'custom'
+      const headers = isCustom ? parseHeadersText() : undefined
+      if (headers === null) return
+      // 仅自定义厂商保存模型级元数据(能力标注/别名/上下文/最大输出/备注)
+      let modelMeta: Record<string, ModelMeta> | undefined
+      if (isCustom) {
+        modelMeta = {}
+        for (const [mid, meta] of Object.entries(metaDrafts)) {
+          const cleaned: ModelMeta = {
+            alias: meta.alias?.trim() || undefined,
+            capability: meta.capability && meta.capability !== 'auto' ? meta.capability : undefined,
+            contextWindow: meta.contextWindow && meta.contextWindow > 0 ? meta.contextWindow : undefined,
+            maxOutput: meta.maxOutput && meta.maxOutput > 0 ? meta.maxOutput : undefined,
+            note: meta.note?.trim() || undefined
+          }
+          if (Object.values(cleaned).some((v) => v !== undefined)) {
+            modelMeta[mid] = cleaned
+          }
+        }
+      }
+      await updateConfig(targetId, {
+        vendor: newConfig.vendor as VendorType,
+        // 配置名称优先,缺省用厂商名
+        vendorLabel: newConfig.name || VENDOR_INFO[newConfig.vendor as VendorType]?.label || '',
+        apiKey: newConfig.apiKey,
+        baseUrl: isCustom ? newConfig.customUrl : VENDOR_INFO[newConfig.vendor as VendorType]?.defaultBaseUrl || '',
+        protocol: isCustom ? newConfig.protocol : undefined,
+        name: newConfig.name || VENDOR_INFO[newConfig.vendor as VendorType]?.label || '',
         models: [...selectedModels],
         defaultModel: [...selectedModels][0] || '',
         status: 'connected',
+        // 仅自定义厂商保存高级选项与模型元数据
+        ...(isCustom ? {
+          orgId: newConfig.orgId.trim(),
+          timeout: newConfig.timeout ? Math.max(0, parseInt(newConfig.timeout, 10) || 0) : 0,
+          headers,
+          modelMeta
+        } : {})
       })
-      setNewConfig({ vendor: '', customUrl: '', apiKey: '', name: '' })
-      setModelStep(1)
-      setAvailableModels([])
-      setSelectedModels(new Set())
-      setTestResult(null)
-      setPendingConfigId(null)
+      cancelFlow(true)
       fetchConfigs()
     } catch (e) {
       console.error(e)
@@ -438,12 +767,37 @@ export default function Settings() {
       <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px' }}>
         {activeSection === 'models' && (
           <div>
-            <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--fg)', margin: '0 0 4px 0' }}>
-              模型管理
-            </h2>
-            <p style={{ fontSize: '13px', color: 'var(--fg-muted)', margin: '0 0 20px 0' }}>
-              管理 AI 模型配置、测试连接和选择可用模型
-            </p>
+            {/* 标题行:左侧标题,右侧模型选择推荐卡片 */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', marginBottom: '20px' }}>
+              <div>
+                <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--fg)', margin: '0 0 4px 0' }}>
+                  模型管理
+                </h2>
+                <p style={{ fontSize: '13px', color: 'var(--fg-muted)', margin: '0' }}>
+                  管理 AI 模型配置、测试连接和选择可用模型
+                </p>
+              </div>
+              {/* 模型选择推荐卡片:点击查看选择指南 */}
+              <div className="rec-card" onClick={() => setGuideOpen(true)} title="查看模型选择指南" style={{ cursor: 'pointer' }}>
+              <svg
+                viewBox="0 0 200 200"
+                xmlns="http://www.w3.org/2000/svg"
+                className="rec-blob"
+                style={{ width: '100%', height: '100%' }}
+              >
+                <path
+                  fill="var(--brand)"
+                  opacity="0.25"
+                  transform="translate(100 100)"
+                  d="M39.5,-49.6C54.8,-43.2,73.2,-36.5,78.2,-24.6C83.2,-12.7,74.8,4.4,69,22.5C63.3,40.6,60.2,59.6,49.1,64.8C38.1,70,19,61.5,0.6,60.7C-17.9,59.9,-35.9,67,-47.2,61.9C-58.6,56.7,-63.4,39.5,-70,22.1C-76.6,4.7,-84.9,-12.8,-81.9,-28.1C-79,-43.3,-64.6,-56.3,-49.1,-62.5C-33.6,-68.8,-16.8,-68.3,-2.3,-65.1C12.1,-61.9,24.2,-55.9,39.5,-49.6Z"
+                />
+              </svg>
+              <div className="rec-content">
+                <p className="rec-label">模型选择推荐</p>
+                <span className="rec-tip">点击查看指南</span>
+              </div>
+            </div>
+            </div>
 
             <div style={{
               display: 'grid',
@@ -491,11 +845,32 @@ export default function Settings() {
                 gap: '10px',
                 marginBottom: '16px'
               }}>
-                <Plus size={16} style={{ color: 'var(--brand)' }} />
+                {editingConfig ? (
+                  <Pencil size={16} style={{ color: 'var(--brand)' }} />
+                ) : (
+                  <Plus size={16} style={{ color: 'var(--brand)' }} />
+                )}
                 <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--fg)' }}>
-                  添加模型配置
+                  {editingConfig ? `编辑模型配置 · ${editingConfig.name || '未命名'}` : '添加模型配置'}
                 </span>
-                <div style={{ display: 'flex', gap: '4px', marginLeft: 'auto' }}>
+                {editingConfig && (
+                  <button
+                    onClick={cancelFlow}
+                    style={{
+                      marginLeft: 'auto',
+                      fontSize: '11px',
+                      padding: '4px 10px',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-full)',
+                      background: 'var(--bg-muted)',
+                      color: 'var(--fg-muted)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    取消编辑
+                  </button>
+                )}
+                <div style={{ display: 'flex', gap: '4px', marginLeft: editingConfig ? '0' : 'auto' }}>
                   {[1, 2, 3].map((s) => (
                     <div key={s} style={{
                       width: '8px',
@@ -510,23 +885,306 @@ export default function Settings() {
 
               {modelStep === 1 && (
                 <div>
-                  <label style={sectionLabel}>选择厂商</label>
-                  <Select
-                    value={newConfig.vendor}
-                    onChange={(v) => setNewConfig((c) => ({ ...c, vendor: v as VendorType }))}
-                    options={Object.entries(VENDOR_INFO)
-                      .sort(([, a], [, b]) => (a.group === b.group ? 0 : a.group === 'official' ? -1 : 1))
-                      .map(([key, info]) => ({
-                        value: key,
-                        label: info.label,
-                        group: info.group === 'official' ? '官方' : '聚合'
-                      }))}
-                    placeholder="选择 AI 厂商"
-                  />
+                  <label style={sectionLabel}>选择厂商{editingConfig ? '（编辑模式不可修改）' : ''}</label>
+                  {/* 厂商卡片选择(点击卡片后配置,主题色配色;编辑模式锁定) */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+                    {Object.entries(VENDOR_INFO).map(([key, info]) => {
+                            const vendorKey = key as VendorType
+                            const active = newConfig.vendor === vendorKey
+                            const hovered = hoveredVendor === vendorKey
+                            return (
+                              <div
+                                key={key}
+                                onClick={() => {
+                                  if (editingConfig) return
+                                  setNewConfig((c) => ({ ...c, vendor: vendorKey }))
+                                }}
+                                onMouseEnter={() => handleVendorHoverEnter(vendorKey)}
+                                onMouseLeave={() => handleVendorHoverLeave(vendorKey)}
+                                style={{
+                                  width: '100%',
+                                  maxWidth: '290px',
+                                  height: '70px',
+                                  background: active ? 'var(--brand-glow)' : 'var(--bg-muted)',
+                                  border: active ? '2px solid var(--brand)' : '1px solid var(--border-subtle)',
+                                  borderRadius: '20px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'flex-start',
+                                  transition: '0.3s ease-in-out',
+                                  cursor: editingConfig ? 'default' : 'pointer',
+                                  transform: hovered && !editingConfig ? 'scale(1.05)' : 'scale(1)',
+                                  position: 'relative',
+                                  boxSizing: 'border-box',
+                                  overflow: 'visible',
+                                  opacity: editingConfig && !active ? 0.45 : 1,
+                                  zIndex: hovered ? 20 : 1
+                                }}
+                              >
+                                {/* logo 块(白底 + 主题色细边框,无 hover 变色) */}
+                                <div style={{
+                                  width: '48px',
+                                  height: '48px',
+                                  marginLeft: '10px',
+                                  borderRadius: '12px',
+                                  background: '#ffffff',
+                                  border: '1px solid var(--brand)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  flexShrink: 0
+                                }}>
+                                  {VENDOR_LOGOS[vendorKey] ? (
+                                    <img
+                                      src={VENDOR_LOGOS[vendorKey]}
+                                      alt={info.label}
+                                      style={{ height: '28px', maxWidth: '32px', objectFit: 'contain' }}
+                                    />
+                                  ) : (
+                                    (() => {
+                                      const Icon = vendorKey === 'custom' ? Plus : Sparkles
+                                      return <Icon size={24} style={{ color: 'var(--brand)' }} />
+                                    })()
+                                  )}
+                                </div>
+                                {/* 文本区 */}
+                                <div style={{ width: 'calc(100% - 90px)', marginLeft: '10px', minWidth: 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
+                                    <span style={{
+                                      fontSize: '14px',
+                                      fontWeight: 700,
+                                      color: 'var(--fg)',
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis'
+                                    }}>
+                                      {info.label}
+                                    </span>
+                                  </div>
+                                  <p style={{
+                                    margin: '2px 0 0',
+                                    fontSize: '11px',
+                                    color: 'var(--fg-muted)',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis'
+                                  }}>
+                                    {['openrouter', 'siliconflow', 'ofox', 'aihubmix'].includes(vendorKey) ? '聚合接入' : (vendorKey === 'custom' ? '自定义接入' : '官方 API 接入')}
+                                  </p>
+                                </div>
+                                {/* Ofox 悬浮推广弹窗:点击跳转注册(无二维码) */}
+                                {hovered && vendorKey === 'ofox' && (
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      // 点击跳转后关闭弹窗(鼠标离开卡片也不会再弹)
+                                      if (vendorHoverTimer.current) clearTimeout(vendorHoverTimer.current)
+                                      setHoveredVendor(null)
+                                      window.api.paths.openExternal(OFOX_REFERRAL_URL)
+                                    }}
+                                    onMouseEnter={() => handleVendorHoverEnter(vendorKey)}
+                                    onMouseLeave={() => handleVendorHoverLeave(vendorKey)}
+                                    className="anim-popup"
+                                    style={{
+                                      position: 'absolute',
+                                      bottom: 'calc(100% + 10px)',
+                                      left: 0,
+                                      zIndex: 400,
+                                      width: '230px',
+                                      background: '#fff',
+                                      borderRadius: '14px',
+                                      boxShadow: '0 16px 40px rgba(0,0,0,0.25)',
+                                      padding: '12px',
+                                      cursor: 'pointer',
+                                      border: '1px solid rgba(0,0,0,0.06)'
+                                    }}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                      <img src={VENDOR_LOGOS.ofox} alt="Ofox" style={{ height: '16px' }} />
+                                      <span style={{ fontSize: '13px', fontWeight: 800, color: '#2c2c2c' }}>OfvoxAI</span>
+                                    </div>
+                                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#2c2c2c' }}>
+                                      3分钟，接入世界模型
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#666', margin: '2px 0 8px' }}>
+                                      官方渠道 稳定高速不限流
+                                    </div>
+                                    <div style={{
+                                      background: '#fdf3e7',
+                                      borderRadius: '10px',
+                                      padding: '8px 10px',
+                                      marginBottom: '8px'
+                                    }}>
+                                      <div style={{ fontSize: '11px', color: '#8a5a2b' }}>首充 $10 即得</div>
+                                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#f97316' }}>
+                                        $1.00 <span style={{ fontSize: '11px', fontWeight: 500 }}>赠送 Credits</span>
+                                      </div>
+                                      <div style={{ fontSize: '10px', color: '#a08a6e', marginTop: '2px' }}>
+                                        有效期至 2026年9月1日
+                                      </div>
+                                    </div>
+                                    <div style={{
+                                      background: '#2c2c2c',
+                                      color: '#fff',
+                                      textAlign: 'center',
+                                      borderRadius: '8px',
+                                      padding: '7px',
+                                      fontSize: '12px',
+                                      fontWeight: 600
+                                    }}>
+                                      点击前往注册 →
+                                    </div>
+                                  </div>
+                                )}
+                                {/* MiMo 悬浮推广弹窗:点击跳转注册 */}
+                                {hovered && vendorKey === 'mimo' && (
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      // 点击跳转后关闭弹窗(鼠标离开卡片也不会再弹)
+                                      if (vendorHoverTimer.current) clearTimeout(vendorHoverTimer.current)
+                                      setHoveredVendor(null)
+                                      window.api.paths.openExternal(MIMO_REFERRAL_URL)
+                                    }}
+                                    onMouseEnter={() => handleVendorHoverEnter(vendorKey)}
+                                    onMouseLeave={() => handleVendorHoverLeave(vendorKey)}
+                                    className="anim-popup"
+                                    style={{
+                                      position: 'absolute',
+                                      bottom: 'calc(100% + 10px)',
+                                      left: 0,
+                                      zIndex: 400,
+                                      width: '230px',
+                                      background: '#fff',
+                                      borderRadius: '14px',
+                                      boxShadow: '0 16px 40px rgba(0,0,0,0.25)',
+                                      padding: '12px',
+                                      cursor: 'pointer',
+                                      border: '1px solid rgba(0,0,0,0.06)'
+                                    }}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                      <img src={VENDOR_LOGOS.mimo} alt="MiMo" style={{ height: '16px' }} />
+                                      <span style={{ fontSize: '13px', fontWeight: 800, color: '#2c2c2c' }}>MiMo 开放平台</span>
+                                    </div>
+                                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#2c2c2c' }}>
+                                      体验小米顶尖模型 MiMo V2.5 等
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#666', margin: '2px 0 8px' }}>
+                                      通过邀请码注册，双方各得体验金
+                                    </div>
+                                    <div style={{
+                                      background: '#fdf3e7',
+                                      borderRadius: '10px',
+                                      padding: '8px 10px',
+                                      marginBottom: '8px'
+                                    }}>
+                                      <div style={{ fontSize: '11px', color: '#8a5a2b' }}>邀请码</div>
+                                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#f97316', fontFamily: 'var(--font-mono)' }}>
+                                        6Q7WYQ
+                                      </div>
+                                      <div style={{ fontSize: '10px', color: '#a08a6e', marginTop: '2px' }}>
+                                        双方各得 ¥10 API 体验金 + 首单 9 折 · 体验金 40 天有效
+                                      </div>
+                                    </div>
+                                    <div style={{
+                                      background: '#2c2c2c',
+                                      color: '#fff',
+                                      textAlign: 'center',
+                                      borderRadius: '8px',
+                                      padding: '7px',
+                                      fontSize: '12px',
+                                      fontWeight: 600
+                                    }}>
+                                      点击前往注册 →
+                                    </div>
+                                  </div>
+                                )}
+                                {/* SiliconFlow 悬浮推广弹窗:点击跳转注册 */}
+                                {hovered && vendorKey === 'siliconflow' && (
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      // 点击跳转后关闭弹窗(鼠标离开卡片也不会再弹)
+                                      if (vendorHoverTimer.current) clearTimeout(vendorHoverTimer.current)
+                                      setHoveredVendor(null)
+                                      window.api.paths.openExternal(SILICONFLOW_REFERRAL_URL)
+                                    }}
+                                    onMouseEnter={() => handleVendorHoverEnter(vendorKey)}
+                                    onMouseLeave={() => handleVendorHoverLeave(vendorKey)}
+                                    className="anim-popup"
+                                    style={{
+                                      position: 'absolute',
+                                      bottom: 'calc(100% + 10px)',
+                                      left: 0,
+                                      zIndex: 400,
+                                      width: '230px',
+                                      background: '#fff',
+                                      borderRadius: '14px',
+                                      boxShadow: '0 16px 40px rgba(0,0,0,0.25)',
+                                      padding: '12px',
+                                      cursor: 'pointer',
+                                      border: '1px solid rgba(0,0,0,0.06)'
+                                    }}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                                      <img src={VENDOR_LOGOS.siliconflow} alt="SiliconFlow" style={{ height: '16px' }} />
+                                      <span style={{ fontSize: '13px', fontWeight: 800, color: '#2c2c2c' }}>硅基流动推荐官</span>
+                                    </div>
+                                    <div style={{ fontSize: '13px', fontWeight: 700, color: '#2c2c2c' }}>
+                                      邀请好友，赚取 ¥16 奖励券
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#666', margin: '2px 0 8px' }}>
+                                      完成实名认证的用户均可作为「推荐官」邀请新用户
+                                    </div>
+                                    <div style={{
+                                      background: '#fdf3e7',
+                                      borderRadius: '10px',
+                                      padding: '8px 10px',
+                                      marginBottom: '8px'
+                                    }}>
+                                      <div style={{ fontSize: '11px', color: '#8a5a2b' }}>每成功邀请 1 名新用户（注册并实名认证）</div>
+                                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#f97316' }}>
+                                        ¥16 <span style={{ fontSize: '11px', fontWeight: 500 }}>推荐官奖励券</span>
+                                      </div>
+                                      <div style={{ fontSize: '10px', color: '#a08a6e', marginTop: '2px' }}>
+                                        邀请人数与奖励次数活动期内不设上限
+                                      </div>
+                                    </div>
+                                    <div style={{
+                                      background: '#2c2c2c',
+                                      color: '#fff',
+                                      textAlign: 'center',
+                                      borderRadius: '8px',
+                                      padding: '7px',
+                                      fontSize: '12px',
+                                      fontWeight: 600
+                                    }}>
+                                      点击前往注册 →
+                                    </div>
+                                  </div>
+                                )}
+                    </div>
+                    )
+                  })}
+                  </div>
                   {newConfig.vendor === 'custom' && (
-                    <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      <div>
-                        <label style={sectionLabel}>接入协议</label>
+                    /* 自定义接入配置面板(仅自定义厂商显示,其他厂商保持简单流程) */
+                    <div style={{
+                      marginTop: '14px',
+                      background: 'var(--bg-muted)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '14px'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                        <Sliders size={13} style={{ color: 'var(--brand)' }} />
+                        <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--fg-secondary)' }}>
+                          自定义接入配置
+                        </span>
+                      </div>
+
+                      <div style={{ marginBottom: '12px' }}>
+                        <label style={{ ...sectionLabel, marginBottom: '4px', fontSize: '11px' }}>接入协议</label>
                         <Select
                           value={newConfig.protocol}
                           onChange={(v) => {
@@ -547,8 +1205,9 @@ export default function Settings() {
                           {PROTOCOL_INFO[newConfig.protocol].hint}
                         </p>
                       </div>
-                      <div>
-                        <label style={sectionLabel}>Base URL</label>
+
+                      <div style={{ marginBottom: '12px' }}>
+                        <label style={{ ...sectionLabel, marginBottom: '4px', fontSize: '11px' }}>Base URL</label>
                         <input
                           type="text"
                           value={newConfig.customUrl}
@@ -556,6 +1215,49 @@ export default function Settings() {
                           placeholder="https://your-api-endpoint.com/v1"
                           style={inputStyle}
                         />
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+                        <div>
+                          <label style={{ ...sectionLabel, marginBottom: '4px', fontSize: '11px' }}>组织 ID（Organization）</label>
+                          <input
+                            type="text"
+                            value={newConfig.orgId}
+                            onChange={(e) => setNewConfig((c) => ({ ...c, orgId: e.target.value }))}
+                            placeholder="org-xxx（可选）"
+                            style={inputStyle}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ ...sectionLabel, marginBottom: '4px', fontSize: '11px' }}>请求超时（秒）</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={newConfig.timeout}
+                            onChange={(e) => setNewConfig((c) => ({ ...c, timeout: e.target.value }))}
+                            placeholder="留空 = SDK 默认"
+                            style={inputStyle}
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label style={{ ...sectionLabel, marginBottom: '4px', fontSize: '11px' }}>自定义请求头（JSON）</label>
+                        <textarea
+                          value={newConfig.headersText}
+                          onChange={(e) => setNewConfig((c) => ({ ...c, headersText: e.target.value }))}
+                          placeholder={'{\n  "X-Api-Key": "your-key",\n  "X-Custom-Header": "value"\n}'}
+                          rows={3}
+                          style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.5' }}
+                        />
+                        {headersError && (
+                          <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#dc2626' }}>
+                            {headersError}
+                          </p>
+                        )}
+                        <p style={{ margin: '4px 0 0', fontSize: '11px', color: 'var(--fg-muted)' }}>
+                          按 JSON 键值对附加到每次请求，用于中转站/网关额外鉴权
+                        </p>
                       </div>
                     </div>
                   )}
@@ -569,9 +1271,21 @@ export default function Settings() {
                       style={inputStyle}
                     />
                   </div>
+
                   <Button
                     variant="primary"
-                    onClick={() => { setModelStep(2); setPendingConfigId(null) }}
+                    onClick={() => {
+                      // 仅自定义厂商进入下一步前校验:Base URL 必填 + 请求头 JSON 合法
+                      if (newConfig.vendor === 'custom') {
+                        if (!newConfig.customUrl.trim()) {
+                          setHeadersError('请输入 Base URL（接入地址不能为空）')
+                          return
+                        }
+                        if (parseHeadersText() === null) return
+                      }
+                      setModelStep(2)
+                      if (!editingConfig) setPendingConfigId(null)
+                    }}
                     disabled={!newConfig.vendor}
                     style={{ marginTop: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}
                   >
@@ -643,18 +1357,35 @@ export default function Settings() {
                       }}>
                         {testResult.success
                           ? `连接成功！延迟 ${testResult.latency}ms`
-                          : '连接失败，请检查 API Key'}
+                          : '连接失败'}
                       </span>
+                    </div>
+                  )}
+                  {connError && (
+                    <div style={{
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      background: '#fee2e2',
+                      marginBottom: '12px',
+                      fontSize: '12px',
+                      color: '#991b1b',
+                      fontFamily: 'var(--font-mono)',
+                      wordBreak: 'break-all',
+                      lineHeight: '1.5'
+                    }}>
+                      {connError}
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <Button variant="ghost" onClick={() => {
-                      if (pendingConfigId) {
+                      // 编辑模式回退不删除被编辑配置
+                      if (!editingConfig && pendingConfigId) {
                         deleteConfig(pendingConfigId)
                         setPendingConfigId(null)
                       }
                       setModelStep(1)
                       setTestResult(null)
+                      setConnError('')
                     }}>
                       上一步
                     </Button>
@@ -674,53 +1405,236 @@ export default function Settings() {
               {modelStep === 3 && (
                 <div>
                   <label style={sectionLabel}>选择可用模型</label>
+                  {newConfig.vendor === 'custom' ? (
+                    <p style={{ margin: '-4px 0 10px', fontSize: '12px', color: 'var(--fg-muted)' }}>
+                      勾选要启用的模型；可为每个模型标注「能力」并配置高级参数，标注将优先于自动识别
+                    </p>
+                  ) : (
+                    <p style={{ margin: '-4px 0 10px', fontSize: '12px', color: 'var(--fg-muted)' }}>
+                      勾选要启用的模型，完成配置
+                    </p>
+                  )}
                   {availableModels.length > 0 ? (
                     <div style={{
-                      maxHeight: '200px',
+                      maxHeight: newConfig.vendor === 'custom' ? '320px' : '200px',
                       overflow: 'auto',
                       border: '1px solid var(--border)',
                       borderRadius: 'var(--radius-md)',
                       padding: '8px',
                       marginBottom: '14px'
                     }}>
-                      {availableModels.map((model) => (
-                        <label
-                          key={model.id}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '10px',
-                            padding: '8px 10px',
-                            borderRadius: 'var(--radius-sm)',
-                            cursor: 'pointer',
-                            transition: 'background 0.15s'
-                          }}
-                          onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-muted)'}
-                          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                        >
-                          <Checkbox
-                            checked={selectedModels.has(model.id)}
-                            onChange={() => {
-                              setSelectedModels((prev) => {
-                                const next = new Set(prev)
-                                if (next.has(model.id)) next.delete(model.id)
-                                else next.add(model.id)
-                                return next
-                              })
+                      {availableModels.map((model) => {
+                        // 非自定义厂商:保持原始简单勾选列表(无能力标注/高级配置)
+                        if (newConfig.vendor !== 'custom') {
+                          return (
+                            <label
+                              key={model.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                padding: '8px 10px',
+                                borderRadius: 'var(--radius-sm)',
+                                cursor: 'pointer',
+                                transition: 'background 0.15s'
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-muted)'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                            >
+                              <Checkbox
+                                checked={selectedModels.has(model.id)}
+                                onChange={() => {
+                                  setSelectedModels((prev) => {
+                                    const next = new Set(prev)
+                                    if (next.has(model.id)) next.delete(model.id)
+                                    else next.add(model.id)
+                                    return next
+                                  })
+                                }}
+                              />
+                              <div>
+                                <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--fg)' }}>
+                                  {model.name}
+                                </span>
+                                {model.description && (
+                                  <span style={{ fontSize: '11px', color: 'var(--fg-muted)', marginLeft: '8px' }}>
+                                    {model.description}
+                                  </span>
+                                )}
+                              </div>
+                            </label>
+                          )
+                        }
+                        // 自定义厂商:带能力标注与高级配置的完整列表
+                        const meta = metaDrafts[model.id] || {}
+                        const isExpanded = expandedMeta.has(model.id)
+                        return (
+                          <div
+                            key={model.id}
+                            style={{
+                              border: '1px solid var(--border-subtle)',
+                              borderRadius: 'var(--radius-md)',
+                              marginBottom: '8px',
+                              overflow: 'hidden'
                             }}
-                          />
-                          <div>
-                            <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--fg)' }}>
-                              {model.name}
-                            </span>
-                            {model.description && (
-                              <span style={{ fontSize: '11px', color: 'var(--fg-muted)', marginLeft: '8px' }}>
-                                {model.description}
-                              </span>
+                          >
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                padding: '8px 10px',
+                                cursor: 'pointer',
+                                transition: 'background 0.15s'
+                              }}
+                              onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-muted)'}
+                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                              onClick={() => {
+                                setSelectedModels((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(model.id)) next.delete(model.id)
+                                  else next.add(model.id)
+                                  return next
+                                })
+                              }}
+                            >
+                              <Checkbox
+                                checked={selectedModels.has(model.id)}
+                                onChange={() => {
+                                  setSelectedModels((prev) => {
+                                    const next = new Set(prev)
+                                    if (next.has(model.id)) next.delete(model.id)
+                                    else next.add(model.id)
+                                    return next
+                                  })
+                                }}
+                              />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--fg)' }}>
+                                    {model.name}
+                                  </span>
+                                  {model.contextWindow ? (
+                                    <span style={{
+                                      fontSize: '10px',
+                                      padding: '1px 6px',
+                                      borderRadius: 'var(--radius-full)',
+                                      background: 'var(--brand-glow)',
+                                      color: 'var(--brand)',
+                                      whiteSpace: 'nowrap'
+                                    }}>
+                                      上下文 {(model.contextWindow / 1000).toFixed(0)}k
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {model.description && (
+                                  <span style={{ fontSize: '11px', color: 'var(--fg-muted)' }}>
+                                    {model.description}
+                                  </span>
+                                )}
+                              </div>
+                              {/* 模型能力标注 */}
+                              <div style={{ width: '120px', flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                                <Select
+                                  value={meta.capability || 'auto'}
+                                  onChange={(v) => updateMetaDraft(model.id, { capability: v as ModelCapability })}
+                                  options={(Object.keys(CAPABILITY_LABELS) as ModelCapability[]).map((c) => ({
+                                    value: c,
+                                    label: CAPABILITY_LABELS[c]
+                                  }))}
+                                />
+                              </div>
+                              {/* 展开高级配置 */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  toggleExpandMeta(model.id)
+                                }}
+                                style={{
+                                  width: '28px',
+                                  height: '28px',
+                                  flexShrink: 0,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 'var(--radius-sm)',
+                                  background: 'transparent',
+                                  cursor: 'pointer',
+                                  color: 'var(--fg-muted)',
+                                  transition: 'transform 0.2s',
+                                  transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)'
+                                }}
+                                title="模型高级配置"
+                              >
+                                <ChevronRight size={14} />
+                              </button>
+                            </div>
+                            {/* 模型高级配置(别名/上下文/最大输出/备注) */}
+                            {isExpanded && (
+                              <div style={{
+                                padding: '10px 12px',
+                                background: 'var(--bg-muted)',
+                                borderTop: '1px solid var(--border-subtle)',
+                                display: 'grid',
+                                gridTemplateColumns: '1fr 1fr',
+                                gap: '8px'
+                              }}>
+                                <div>
+                                  <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--fg-secondary)', marginBottom: '4px' }}>
+                                    显示别名（可选）
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={meta.alias || ''}
+                                    onChange={(e) => updateMetaDraft(model.id, { alias: e.target.value })}
+                                    placeholder="如：主力生图模型"
+                                    style={{ ...inputStyle, fontSize: '12px', padding: '6px 10px' }}
+                                  />
+                                </div>
+                                <div>
+                                  <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--fg-secondary)', marginBottom: '4px' }}>
+                                    上下文窗口（tokens）
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={meta.contextWindow ?? ''}
+                                    onChange={(e) => updateMetaDraft(model.id, { contextWindow: e.target.value ? Number(e.target.value) : undefined })}
+                                    placeholder={model.contextWindow ? String(model.contextWindow) : '自动'}
+                                    style={{ ...inputStyle, fontSize: '12px', padding: '6px 10px' }}
+                                  />
+                                </div>
+                                <div>
+                                  <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--fg-secondary)', marginBottom: '4px' }}>
+                                    最大输出（tokens）
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={meta.maxOutput ?? ''}
+                                    onChange={(e) => updateMetaDraft(model.id, { maxOutput: e.target.value ? Number(e.target.value) : undefined })}
+                                    placeholder="默认 4000"
+                                    style={{ ...inputStyle, fontSize: '12px', padding: '6px 10px' }}
+                                  />
+                                </div>
+                                <div>
+                                  <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: 'var(--fg-secondary)', marginBottom: '4px' }}>
+                                    备注（可选）
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={meta.note || ''}
+                                    onChange={(e) => updateMetaDraft(model.id, { note: e.target.value })}
+                                    placeholder="记录用途/限制"
+                                    style={{ ...inputStyle, fontSize: '12px', padding: '6px 10px' }}
+                                  />
+                                </div>
+                              </div>
                             )}
                           </div>
-                        </label>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : (
                     <div style={{
@@ -735,15 +1649,58 @@ export default function Settings() {
                       {loading ? '正在获取模型列表...' : '暂无可用模型'}
                     </div>
                   )}
+                  {fetchError && (
+                    <div style={{
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-md)',
+                      background: '#fef3c7',
+                      color: '#92400e',
+                      fontSize: '12px',
+                      marginBottom: '10px',
+                      lineHeight: '1.5',
+                      wordBreak: 'break-all'
+                    }}>
+                      {fetchError}
+                    </div>
+                  )}
+                  {/* 手动添加模型(中转站无 /models 接口时的兜底) */}
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                    <input
+                      type="text"
+                      value={manualModel}
+                      onChange={(e) => setManualModel(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          handleManualAddModel()
+                        }
+                      }}
+                      placeholder="手动输入模型名（如 gpt-4o / flux-1.1-pro）"
+                      style={inputStyle}
+                    />
+                    <Button
+                      variant="secondary"
+                      onClick={handleManualAddModel}
+                      disabled={!manualModel.trim()}
+                      style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+                    >
+                      <Plus size={14} />
+                      添加
+                    </Button>
+                  </div>
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <Button variant="ghost" onClick={() => {
-                      if (pendingConfigId) {
+                      // 编辑模式回退不删除被编辑配置
+                      if (!editingConfig && pendingConfigId) {
                         deleteConfig(pendingConfigId)
                         setPendingConfigId(null)
                       }
                       setModelStep(1)
                       setAvailableModels([])
                       setSelectedModels(new Set())
+                      setMetaDrafts({})
+                      setExpandedMeta(new Set())
+                      setFetchError('')
                     }}>
                       上一步
                     </Button>
@@ -754,7 +1711,7 @@ export default function Settings() {
                       style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
                     >
                       <Plus size={14} />
-                      添加已选模型 ({selectedModels.size})
+                      {editingConfig ? '保存修改' : '添加已选模型'} ({selectedModels.size})
                     </Button>
                   </div>
                 </div>
@@ -770,13 +1727,14 @@ export default function Settings() {
               }}>
                 已配置模型
               </h3>
-              {modelConfigs.filter(c => c.status === 'connected' && c.models.length > 0).length > 0 ? (
+              {modelConfigs.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {modelConfigs.filter(c => c.status === 'connected' && c.models.length > 0).map((config) => (
+                  {modelConfigs.map((config) => (
                     <ModelConfigCard
                       key={config.id}
                       config={config}
-                      onDelete={() => deleteConfig(config.id)}
+                      onDelete={() => setDeleteTarget(config)}
+                      onEdit={() => startEdit(config)}
                       testConnection={testConnection}
                       maskKey={maskKey}
                     />
@@ -798,6 +1756,74 @@ export default function Settings() {
             </div>
           </div>
         )}
+
+                {/* 模型选择指南弹窗 */}
+        <Modal
+          open={guideOpen}
+          onClose={() => setGuideOpen(false)}
+          title="模型选择指南"
+        >
+          <div style={{ fontSize: '13px', lineHeight: 1.9, color: 'var(--fg)' }}>
+            <div style={{ marginBottom: '18px' }}>
+              <p style={{ fontWeight: 700, margin: '0 0 6px 0', color: 'var(--brand)' }}>文案模型（分析商品图 + 撰写文案）怎么选</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 文案任务需要识别商品图片，必须选支持视觉理解的多模态模型：GPT-4o、Gemini、通义千问 VL（qwen-vl）、GLM-4V、Kimi、MiniMax 等。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 纯文本模型（如部分 DeepSeek 版本）无法识图，只能做纯文字创作，不适合本工作台的商品文案任务。</p>
+              <p style={{ margin: '0' }}>· 文案模型还承担「产品分析」：分析出的产品特征描述会用于所有后续生成，选上下文窗口大、输出上限高的模型，特征还原更准确。</p>
+            </div>
+            <div style={{ marginBottom: '18px' }}>
+              <p style={{ fontWeight: 700, margin: '0 0 6px 0', color: 'var(--brand)' }}>生图模型（基于商品图生成新图）怎么选</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 需要图生图（以商品参考图为基础生成），必须选支持图生图 / 图像编辑的模型：qwen-image-edit、Seedream、gpt-image、Gemini 图像等。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 编辑模式模型（Gemini 图像 / gpt-image）：带参考图时输出尺寸跟随参考图，参考图比例与所选尺寸不一致时会提示裁剪；建议先用「图片编辑」把参考图裁剪成目标比例再生成。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 纯文生图模型（不支持参考图）无法保持商品一致性，生成结果可能与商品不符。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· MiniMax image-01 的人物参考仅支持人像，不适合商品图生图。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 清晰度与尺寸：不同模型支持的输出档位不同（如 Seedream 有 1K / 2K / 4K 档，部分模型仅支持固定比例），档位越高越清晰，但生成更慢、消耗更多。</p>
+              <p style={{ margin: '0' }}>· 「白底图生成」工具建议优先选编辑保真强的模型，背景简单的产品图效果最好。</p>
+            </div>
+            <div>
+              <p style={{ fontWeight: 700, margin: '0 0 6px 0', color: 'var(--brand)' }}>注意事项</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 生成前先确认所选输出尺寸与清晰度档位在该模型支持范围内，避免生成失败或图片被强制缩放变形。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 商品一致性依赖参考图与文字描述：图生图时请上传清晰、背景干净的商品图，并在描述中写明材质、颜色、形状等关键特征。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· API Key 余额不足或触发限流会导致生成失败，失败原因会显示在任务详情中。</p>
+              <p style={{ margin: '0 0 4px 0' }}>· 部分模型有提示词字数上限（如 MiniMax 单次约 1500 字），超长会自动裁剪并尽量保留商品特征。</p>
+              <p style={{ margin: '0' }}>· 提示词不是越长越好：关键特征（材质、颜色、形状、光线、构图）描述越具体，生成结果越贴近预期；堆砌无关细节或互相矛盾的描述反而会降低图片质量。</p>
+            </div>
+          </div>
+        </Modal>
+        {/* 删除配置确认弹窗 */}
+        <Modal
+          open={!!deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          title="删除模型配置"
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setDeleteTarget(null)}>
+                取消
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  if (deleteTarget) {
+                    deleteConfig(deleteTarget.id)
+                    // 若删除的正是编辑中的配置,退出编辑模式
+                    if (editingConfig?.id === deleteTarget.id) {
+                      cancelFlow()
+                    }
+                  }
+                  setDeleteTarget(null)
+                }}
+              >
+                确认删除
+              </Button>
+            </>
+          }
+        >
+          <p style={{ margin: '0 0 8px', fontSize: '13px', color: 'var(--fg)' }}>
+            确定删除配置「{deleteTarget?.name || deleteTarget?.vendor}」吗？
+          </p>
+          <p style={{ margin: 0, fontSize: '12px', color: 'var(--fg-muted)' }}>
+            删除后该配置下的 {deleteTarget?.models.length ?? 0} 个模型将不再可用，此操作不可恢复。
+          </p>
+        </Modal>
 
         {activeSection === 'advanced' && (
           <div>
@@ -1083,22 +2109,6 @@ export default function Settings() {
                 </div>
               )}
             </div>
-
-            <div style={{
-              display: 'flex',
-              gap: '10px',
-              marginTop: '24px',
-              paddingTop: '16px',
-              borderTop: '1px solid var(--border-subtle)'
-            }}>
-              <Button variant="primary" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Check size={14} />
-                保存设置
-              </Button>
-              <Button variant="ghost">
-                恢复默认
-              </Button>
-            </div>
           </div>
         )}
 
@@ -1141,7 +2151,7 @@ export default function Settings() {
               .upd-btn:hover { letter-spacing: 6px; }
               .upd-btn:hover::before, .upd-btn:hover .upd-btn__text::before { width: 8px; }
               .upd-btn:hover::after, .upd-btn:hover .upd-btn__text::after { width: calc(100% - 48px * 2 - 16px); }
-              .upd-btn__drow1, .upd-btn__drow2 { position: absolute; z-index: -1; border-radius: 16px; transform-origin: 16px 16px; }
+              .upd-btn__drow1, .upd-btn__drow2 { position: absolute; z-index: -1; border-radius: 16px; transform-origin: 16px 16px; opacity: 0; }
               .upd-btn__drow1 { top: -16px; left: 30px; width: 32px; height: 0; transform: rotate(30deg); }
               .upd-btn__drow2 { top: 34px; left: 62px; width: 32px; height: 0; transform: rotate(-127deg); }
               .upd-btn__drow1::before, .upd-btn__drow1::after, .upd-btn__drow2::before, .upd-btn__drow2::after { content: ""; position: absolute; }
@@ -1150,6 +2160,8 @@ export default function Settings() {
               .upd-btn__drow2::before { bottom: 0; left: 0; width: 0; height: 32px; border-radius: 16px; transform-origin: 16px 16px; transform: rotate(-146deg); }
               .upd-btn__drow2::after { bottom: 26px; left: -40px; width: 0; height: 32px; border-radius: 16px; transform-origin: 16px 16px; transform: rotate(-262deg); }
               .upd-btn__drow1, .upd-btn__drow1::before, .upd-btn__drow1::after, .upd-btn__drow2, .upd-btn__drow2::before, .upd-btn__drow2::after { background: var(--back_color); }
+              /* 装饰元素平时隐藏,仅 hover 时出现,避免与相邻按钮互相遮挡 */
+              .upd-btn:hover .upd-btn__drow1, .upd-btn:hover .upd-btn__drow2 { opacity: 1; }
               .upd-btn:hover .upd-btn__drow1 { animation: upd-drow1 ease-in 0.06s; animation-fill-mode: forwards; }
               .upd-btn:hover .upd-btn__drow1::before { animation: upd-drow2 linear 0.08s 0.06s; animation-fill-mode: forwards; }
               .upd-btn:hover .upd-btn__drow1::after { animation: upd-drow3 linear 0.03s 0.14s; animation-fill-mode: forwards; }
@@ -1210,7 +2222,7 @@ export default function Settings() {
                 <HoloVersion text={`v${appVersion || '1.0.0'}`} />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '24px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <UpdateButton
                     text={
                       updateState === 'checking' ? '检查中...'
@@ -1227,6 +2239,8 @@ export default function Settings() {
                         : handleCheckUpdate
                     }
                   />
+                  {/* 网盘下载:国内用户手动更新兜底(链接硬编码,点击浏览器跳转) */}
+                  <UpdateButton text="网盘下载" onClick={handleOpenMirror} />
                   {updateState === 'downloaded' && updateVersion && (
                     <span style={{ fontSize: '12px', color: 'var(--fg-muted)' }}>
                       新版本 v{updateVersion} 已下载
@@ -1246,6 +2260,9 @@ export default function Settings() {
                     }} />
                   </div>
                 )}
+                {mirrorMsg && (
+                  <span style={{ fontSize: '11px', color: 'var(--fg-muted)' }}>{mirrorMsg}</span>
+                )}
                 {updateError && (
                   <span style={{ fontSize: '11px', color: 'var(--danger)', maxWidth: '260px' }}>
                     {updateError}
@@ -1253,6 +2270,52 @@ export default function Settings() {
                 )}
               </div>
             </div>
+
+            {/* 网盘下载确认弹窗:告知提取码,用户确认后跳转 */}
+            <Modal
+              open={mirrorConfirmOpen}
+              onClose={() => setMirrorConfirmOpen(false)}
+              title="网盘下载"
+              footer={
+                <>
+                  <Button variant="secondary" onClick={() => setMirrorConfirmOpen(false)}>取消</Button>
+                  <Button variant="primary" onClick={handleConfirmMirror}>确定跳转</Button>
+                </>
+              }
+            >
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                <Download size={20} style={{ color: 'var(--brand)', flexShrink: 0, marginTop: '2px' }} />
+                <div>
+                  <p style={{ margin: '0 0 8px', fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
+                    即将打开网盘下载页面，下载安装包后覆盖安装即可完成更新。
+                  </p>
+                  <p style={{ margin: 0, fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    网盘提取码：
+                    <strong style={{ color: 'var(--brand)' }}>{MIRROR_DOWNLOAD_CODE}</strong>
+                    <button
+                      onClick={handleCopyMirrorCode}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '3px',
+                        padding: '2px 8px',
+                        fontSize: '11px',
+                        fontWeight: 500,
+                        border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-full)',
+                        background: 'var(--bg-muted)',
+                        color: 'var(--fg-secondary)',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s'
+                      }}
+                    >
+                      <Copy size={11} />
+                      {codeCopied ? '已复制' : '点击复制'}
+                    </button>
+                  </p>
+                </div>
+              </div>
+            </Modal>
 
             <div style={{ display: 'flex', gap: '24px', alignItems: 'stretch', justifyContent: 'space-between', marginBottom: '24px' }}>
               {/* Changelog（可滚动，高度与开发者卡片一致） */}
@@ -1273,7 +2336,7 @@ export default function Settings() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <div style={{ paddingBottom: '16px', borderBottom: '1px solid var(--border-subtle)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                      <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg)' }}>v1.0.0</span>
+                      <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg)' }}>v1.0.1</span>
                       <span style={{
                         padding: '2px 8px',
                         borderRadius: 'var(--radius-full)',
@@ -1284,14 +2347,14 @@ export default function Settings() {
                       }}>
                         最新
                       </span>
-                      <span style={{ fontSize: '12px', color: 'var(--fg-muted)' }}>2026-07-31</span>
+                      <span style={{ fontSize: '12px', color: 'var(--fg-muted)' }}>2026-08-17</span>
                     </div>
                     <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', lineHeight: '1.8', color: 'var(--fg-muted)' }}>
-                      <li>新增批量任务功能，支持多商品同时生成</li>
-                      <li>新增广告图生成，支持电商广告、社交媒体、活动海报</li>
-                      <li>优化 AI 风格复刻算法，提升风格还原度</li>
-                      <li>新增浅色主题支持</li>
-                      <li>修复多个已知问题</li>
+                      <li>AI 一键生成主图 / 详情图 / 广告图</li>
+                      <li>风格复刻：参考爆款设计图，AI 智能复刻风格</li>
+                      <li>其他功能：图片编辑、白底图生成</li>
+                      <li>支持 14 家主流 AI 厂商模型接入</li>
+                      <li>在线更新与数据自动备份</li>
                     </ul>
                   </div>
                 </div>
@@ -1508,14 +2571,15 @@ export default function Settings() {
 }
 
 function ModelConfigCard({
-  config, onDelete, testConnection, maskKey
+  config, onDelete, onEdit, testConnection, maskKey
 }: {
   config: ModelConfig
   onDelete: () => void
-  testConnection: (id: string) => Promise<{ success: boolean; latency: number }>
+  onEdit: () => void
+  testConnection: (id: string) => Promise<{ success: boolean; latency: number; error?: string }>
   maskKey: (k: string) => string
 }) {
-  const [cardTestResult, setCardTestResult] = useState<{ success: boolean; latency: number } | null>(null)
+  const [cardTestResult, setCardTestResult] = useState<{ success: boolean; latency: number; error?: string } | null>(null)
   const [testing, setTesting] = useState(false)
 
   const vendorLabels: Record<string, string> = {
@@ -1525,8 +2589,29 @@ function ModelConfigCard({
     openrouter: 'OpenRouter',
     agnes: 'Agnes AI',
     ofox: 'Ofox',
+    aihubmix: 'AIHubMix',
+    siliconflow: 'SiliconFlow',
+    volcengine: '火山方舟',
+    bailian: '阿里云百炼',
+    mimo: '小米 MiMo',
+    kimi: 'Kimi',
+    minimax: 'MiniMax',
     custom: '自定义'
   }
+
+  // 连接状态徽章(所有配置都展示,包括未连接/未测试的)
+  const statusBadge = (() => {
+    if (config.isActive) {
+      return { text: '已启用', bg: '#dcfce7', color: '#166534' }
+    }
+    if (config.status === 'error') {
+      return { text: '连接失败', bg: '#fee2e2', color: '#991b1b' }
+    }
+    if (config.status === 'untested') {
+      return { text: '未测试', bg: '#fef9c3', color: '#854d0e' }
+    }
+    return { text: '已禁用', bg: '#fee2e2', color: '#991b1b' }
+  })()
 
   const handleTest = async () => {
     setTesting(true)
@@ -1535,7 +2620,7 @@ function ModelConfigCard({
       const result = await testConnection(config.id)
       setCardTestResult(result)
     } catch {
-      setCardTestResult({ success: false, latency: 0 })
+      setCardTestResult({ success: false, latency: 0, error: '测试请求失败' })
     } finally {
       setTesting(false)
     }
@@ -1551,18 +2636,39 @@ function ModelConfigCard({
       border: '1px solid var(--border)',
       borderRadius: 'var(--radius-md)'
     }}>
-      <div style={{
-        width: '40px',
-        height: '40px',
-        borderRadius: 'var(--radius-md)',
-        background: 'var(--brand-glow)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0
-      }}>
-        <Server size={18} style={{ color: 'var(--brand)' }} />
-      </div>
+      {VENDOR_LOGOS[config.vendor] ? (
+        <div style={{
+          width: '48px',
+          height: '48px',
+          borderRadius: '12px',
+          background: '#ffffff',
+          border: '1px solid var(--brand)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0
+        }}>
+          <img
+            src={VENDOR_LOGOS[config.vendor]}
+            alt=""
+            style={{ height: '28px', maxWidth: '32px', objectFit: 'contain' }}
+          />
+        </div>
+      ) : (
+        <div style={{
+          width: '48px',
+          height: '48px',
+          borderRadius: '12px',
+          background: '#ffffff',
+          border: '1px solid var(--brand)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0
+        }}>
+          <Server size={24} style={{ color: 'var(--brand)' }} />
+        </div>
+      )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
           <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--fg)' }}>
@@ -1572,11 +2678,11 @@ function ModelConfigCard({
             fontSize: '10px',
             padding: '2px 8px',
             borderRadius: 'var(--radius-full)',
-            background: config.isActive ? '#dcfce7' : '#fee2e2',
-            color: config.isActive ? '#166534' : '#991b1b',
+            background: statusBadge.bg,
+            color: statusBadge.color,
             fontWeight: 600
           }}>
-            {config.isActive ? '已启用' : '已禁用'}
+            {statusBadge.text}
           </span>
           <span style={{
             fontSize: '10px',
@@ -1599,27 +2705,65 @@ function ModelConfigCard({
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '11px', color: 'var(--fg-muted)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '11px', color: 'var(--fg-muted)', flexWrap: 'wrap' }}>
           <span style={{ fontFamily: 'var(--font-mono)' }}>
             Key: {maskKey(config.apiKey)}
           </span>
+          {config.baseUrl && (
+            <span style={{ fontFamily: 'var(--font-mono)', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {config.baseUrl}
+            </span>
+          )}
           {config.models.length > 0 && (
             <span>模型: {config.models.length} 个</span>
+          )}
+          {config.orgId && (
+            <span>Org: {config.orgId}</span>
+          )}
+          {config.timeout ? (
+            <span>超时: {config.timeout}s</span>
+          ) : null}
+          {config.headers && Object.keys(config.headers).length > 0 && (
+            <span>请求头: {Object.keys(config.headers).length} 个</span>
           )}
         </div>
         {config.models.length > 0 && (
           <div style={{ display: 'flex', gap: '4px', marginTop: '6px', flexWrap: 'wrap' }}>
-            {config.models.slice(0, 4).map((m) => (
-              <span key={m} style={{
-                fontSize: '10px',
-                padding: '2px 6px',
-                background: 'var(--bg-muted)',
-                borderRadius: 'var(--radius-sm)',
-                color: 'var(--fg-muted)'
-              }}>
-                {m}
-              </span>
-            ))}
+            {config.models.slice(0, 4).map((m) => {
+              const meta = (config as any).modelMeta?.[m]
+              const cap = meta?.capability
+              return (
+                <span key={m} style={{
+                  fontSize: '10px',
+                  padding: '2px 6px',
+                  background: 'var(--bg-muted)',
+                  borderRadius: 'var(--radius-sm)',
+                  color: 'var(--fg-muted)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}>
+                  {m}
+                  {cap && cap !== 'auto' && (
+                    <span style={{
+                      padding: '0 5px',
+                      borderRadius: 'var(--radius-full)',
+                      fontSize: '9px',
+                      fontWeight: 600,
+                      background: cap === 'image' ? '#dcfce7' : cap === 'vision' ? '#dbeafe' : '#fef9c3',
+                      color: cap === 'image' ? '#166534' : cap === 'vision' ? '#1e40af' : '#854d0e'
+                    }}>
+                      {CAPABILITY_LABELS[cap]}
+                    </span>
+                  )}
+                  {meta?.alias && (
+                    <span style={{ color: 'var(--brand)', fontStyle: 'italic' }}>
+                      {meta.alias}
+                    </span>
+                  )}
+                </span>
+              )
+            })}
             {config.models.length > 4 && (
               <span style={{ fontSize: '10px', color: 'var(--fg-muted)' }}>
                 +{config.models.length - 4}
@@ -1636,13 +2780,20 @@ function ModelConfigCard({
             color: cardTestResult.success ? '#166534' : '#991b1b',
             fontSize: '11px',
             display: 'flex',
-            alignItems: 'center',
-            gap: '4px'
+            flexDirection: 'column',
+            gap: '2px'
           }}>
-            <Check size={11} />
-            {cardTestResult.success
-              ? `连接成功 · 延迟 ${cardTestResult.latency}ms`
-              : '连接失败，请检查配置'}
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Check size={11} />
+              {cardTestResult.success
+                ? `连接成功 · 延迟 ${cardTestResult.latency}ms`
+                : '连接失败'}
+            </span>
+            {!cardTestResult.success && cardTestResult.error && (
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', wordBreak: 'break-all' }}>
+                {cardTestResult.error}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -1652,6 +2803,9 @@ function ModelConfigCard({
         )}
         <button onClick={handleTest} style={iconBtnStyle} title="测试连接" disabled={testing}>
           <TestTube size={14} />
+        </button>
+        <button onClick={onEdit} style={iconBtnStyle} title="编辑配置">
+          <Pencil size={14} />
         </button>
         <button onClick={onDelete} style={iconBtnStyle} title="删除配置">
           <Trash2 size={14} />

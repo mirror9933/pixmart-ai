@@ -5,6 +5,7 @@ import ThemeToggle from '@/components/ui/ThemeToggle'
 const navItems = [
   { path: '/', label: '全品类商品图' },
   { path: '/style-replication', label: '风格复刻' },
+  { path: '/other-tools', label: '其他功能' },
   { path: '/project-history', label: '项目记录' },
 ]
 

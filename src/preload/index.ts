@@ -22,7 +22,7 @@ const api = {
     update: (id: string, data: any) => ipcRenderer.invoke('models:update', id, data),
     delete: (id: string) => ipcRenderer.invoke('models:delete', id),
     testConnection: (id: string) => ipcRenderer.invoke('models:testConnection', id),
-    fetchModels: (id: string) => ipcRenderer.invoke('models:fetchModels', id),
+    fetchModels: (id: string, opts?: { persist?: boolean }) => ipcRenderer.invoke('models:fetchModels', id, opts),
     clearAll: () => ipcRenderer.invoke('models:clearAll'),
     onChanged: (callback: () => void) => {
       const handler = () => callback()
@@ -50,6 +50,7 @@ const api = {
     update: (key: string, newPath: string) => ipcRenderer.invoke('paths:update', key, newPath),
     selectDirectory: (title?: string) => ipcRenderer.invoke('paths:selectDirectory', title),
     openDirectory: (dirPath: string) => ipcRenderer.invoke('paths:openDirectory', dirPath),
+    openExternal: (url: string) => ipcRenderer.invoke('paths:openExternal', url),
     resetToDefault: (key: string) => ipcRenderer.invoke('paths:resetToDefault', key),
     getLogs: () => ipcRenderer.invoke('paths:getLogs'),
     getLogFile: (filename: string) => ipcRenderer.invoke('paths:getLogFile', filename),
@@ -76,6 +77,9 @@ const api = {
   },
   theme: {
     apply: (theme: string) => ipcRenderer.send('theme:apply', theme),
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
   },
   updater: {
     check: () => ipcRenderer.invoke('updater:check'),

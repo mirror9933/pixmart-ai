@@ -301,6 +301,75 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 模型选择推荐卡片(uiverse style,主题化配色):hover 上移 + 模糊 blob 清晰化 */
+.rec-card {
+  width: 84px;
+  height: 84px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 14px var(--brand-glow);
+  transition: transform 0.5s ease, box-shadow 0.5s ease, border-color 0.5s ease;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.rec-card:hover {
+  transform: translateY(-6px);
+  border-color: var(--brand);
+  box-shadow: 0 8px 20px var(--brand-glow);
+}
+.rec-card .rec-blob {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  filter: blur(18px);
+  transform: scale(0.95);
+  transition: filter 0.5s ease, transform 0.5s ease;
+}
+.rec-card:hover .rec-blob {
+  filter: blur(0);
+  transform: scale(1.05);
+}
+.rec-card .rec-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.rec-card .rec-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand);
+  white-space: nowrap;
+}
+.rec-card .rec-tip {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  margin-top: 3px;
+  white-space: nowrap;
+}
+
+/* 厂商悬浮弹窗入场动画:快速淡入 + 轻微上移,transform 走 GPU 合成避免掉帧 */@keyframes popupIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.anim-popup {
+  animation: popupIn 0.16s cubic-bezier(0.2, 0.8, 0.3, 1);
+  will-change: transform, opacity;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
 @keyframes pulseGlow {
   0%, 100% { box-shadow: 0 0 0 0 var(--brand-glow); }
   50% { box-shadow: 0 0 0 6px transparent; }
@@ -501,3 +570,12 @@ input:checked + .check svg polyline {
 [data-animations="on"] .anim-stagger > *:nth-child(8) { animation-delay: 350ms; }
 [data-animations="on"] .anim-stagger > *:nth-child(9) { animation-delay: 400ms; }
 [data-animations="on"] .anim-stagger > *:nth-child(10) { animation-delay: 450ms; }
+
+/* 其他功能页工具卡片(uiverse 风格信封卡片,主题化):hover 放大 + 前后内容切换 */
+.tool-card-group { position: relative; display: block; }
+.tool-card-group .tool-card { transition: transform 0.4s ease; }
+.tool-card-group:hover .tool-card { transform: scale(1.05); }
+.tool-card-group .tool-front { transition: opacity 0.3s ease; }
+.tool-card-group:hover .tool-front { position: absolute; opacity: 0; }
+.tool-card-group .tool-back { position: absolute; opacity: 0; transition: opacity 0.3s ease; }
+.tool-card-group:hover .tool-back { position: relative; opacity: 1; }

@@ -1,17 +1,21 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
-import { ImagePlus, Sparkles, Wand2, Plus, Zap, Eye, X, RefreshCw } from 'lucide-react'
+import { ImagePlus, Sparkles, Wand2, Plus, Eye, X, RefreshCw, AlertCircle } from 'lucide-react'
 import StepIndicator from '@/components/shared/StepIndicator'
 import AiWriteModal from '@/components/shared/AiWriteModal'
 import ErrorModal from '@/components/shared/ErrorModal'
+import ConfirmDialog from '@/components/shared/ConfirmDialog'
+import CropModal from '@/components/shared/CropModal'
 import ModuleSelector from '@/components/shared/ModuleSelector'
 import type { CustomModuleData } from '@/components/shared/CustomModuleModal'
 import Button from '@/components/ui/Button'
+import Modal from '@/components/ui/Modal'
 import Select from '@/components/ui/Select'
 import SearchableSelect from '@/components/ui/SearchableSelect'
 import Textarea from '@/components/ui/Textarea'
 import UploadArea, { type UploadedFile } from '@/components/ui/UploadArea'
 import { useModelOptions } from '@/hooks/useModelOptions'
+import { buildAiErrorMessage } from '@/utils/aiError'
 import { MAIN_MODULE_TYPES } from '@/constants/mainModules'
 import { DETAIL_MODULE_TYPES } from '@/constants/detailModules'
 import { MAIN_DETAIL_SIZE_OPTIONS, PLATFORM_OPTIONS } from '@/constants/sizeOptions'
@@ -71,7 +75,12 @@ export default function ProductImages() {
   const [aiModalOpen, setAiModalOpen] = useState(false)
   const [aiModalTarget, setAiModalTarget] = useState<'main' | 'detail' | 'ad'>('main')
   const [adType, setAdType] = useState<string>('电商广告')
-  const [productImages, setProductImages] = useState<UploadedFile[]>([])
+  // 各 tab 独立的参考图列表(主图/详情图/广告图互不共用)
+  const [mainImages, setMainImages] = useState<UploadedFile[]>([])
+  const [detailImages, setDetailImages] = useState<UploadedFile[]>([])
+  const [adImages, setAdImages] = useState<UploadedFile[]>([])
+  const currentImages = activeTab === '主图' ? mainImages : activeTab === '详情图' ? detailImages : adImages
+  const setCurrentImages = activeTab === '主图' ? setMainImages : activeTab === '详情图' ? setDetailImages : setAdImages
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   // 主图模块选择:key -> 生成数量(选中即存在;默认全部各 1 张)
   const [mainModules, setMainModules] = useState<Record<string, number>>(
@@ -168,7 +177,11 @@ export default function ProductImages() {
           } else {
             setAdForm((f) => ({ ...f, textModel: lastModels.ad?.textModel || '', imageModel: lastModels.ad?.imageModel || '' }))
           }
-          if (state.productImages?.length) setProductImages(state.productImages)
+          // 独立参考图恢复(兼容旧版本单份 productImages -> 归入主图)
+          if (state.mainImages?.length) setMainImages(state.mainImages)
+          if (state.detailImages?.length) setDetailImages(state.detailImages)
+          if (state.adImages?.length) setAdImages(state.adImages)
+          if (state.productImages?.length && !state.mainImages?.length) setMainImages(state.productImages)
           if (state.mainModules) setMainModules(state.mainModules)
           if (state.detailModules) setDetailModules(state.detailModules)
         } else {
@@ -178,8 +191,64 @@ export default function ProductImages() {
           setAdForm((f) => ({ ...f, textModel: lastModels.ad?.textModel || '', imageModel: lastModels.ad?.imageModel || '' }))
         }
       } catch {}
+      // 从图片编辑导入的图片(导出到本页):切换到对应 tab 并合并进产品图列表
+      try {
+        const raw = sessionStorage.getItem('pixmart-import-images')
+        if (raw) {
+          sessionStorage.removeItem('pixmart-import-images')
+          const data = JSON.parse(raw)
+          const urls: string[] = Array.isArray(data) ? data : data?.images
+          if (Array.isArray(urls) && urls.length > 0) {
+            // 目标 tab:main/detail/ad(旧格式数组无 target,归入主图)
+            const target = data?.target
+            const imported = urls.map((u, i) => ({
+              path: '',
+              name: `edited-${Date.now()}-${i + 1}.png`,
+              size: Math.round(u.length * 0.75),
+              dataUrl: u
+            }))
+            if (target === 'main') { setActiveTab('主图'); setMainImages(prev => [...prev, ...imported]) }
+            else if (target === 'detail') { setActiveTab('详情图'); setDetailImages(prev => [...prev, ...imported]) }
+            else if (target === 'ad') { setActiveTab('广告图'); setAdImages(prev => [...prev, ...imported]) }
+            else { setMainImages(prev => [...prev, ...imported]) }
+          }
+        }
+      } catch {}
     })()
   }, [])
+
+  // 编辑模式模型(Gemini 图像/gpt-image)输出尺寸跟随参考图:
+  // 需求输入阶段检测参考图比例与所选尺寸是否一致,不一致时提醒用户手动裁剪(裁剪后自动替换已上传的参考图)
+  useEffect(() => {
+    const form = activeTab === '主图' ? mainForm : activeTab === '详情图' ? detailForm : adForm
+    const model = form.imageModel || ''
+    const size = form.size || ''
+    const refImg = currentImages.find(img => img.dataUrl)
+    if (!model || !size || !refImg || !/gemini.*image|imagen|gpt-image/i.test(model)) return
+    const key = `${model}|${size}|${refImg.name || refImg.dataUrl.slice(0, 40)}`
+    if (cropWarnedRef.current[key]) return
+    const img = new Image()
+    img.onload = () => {
+      if (cropWarnedRef.current[key]) return
+      const m = size.match(/^(\d+):(\d+)$/) || size.match(/^(\d+)x(\d+)$/)
+      if (!m) return
+      const expected = parseInt(m[1], 10) / parseInt(m[2], 10)
+      if (!expected) return
+      const actual = img.naturalWidth / img.naturalHeight
+      if (Math.abs(actual - expected) / expected <= 0.15) return
+      cropWarnedRef.current[key] = true
+      setCropWarnSize(size)
+      setCropWarnOpen(true)
+    }
+    img.onerror = () => {}
+    img.src = refImg.dataUrl
+  }, [
+    activeTab,
+    mainForm.imageModel, mainForm.size,
+    detailForm.imageModel, detailForm.size,
+    adForm.imageModel, adForm.size,
+    mainImages, detailImages, adImages
+  ])
 
   // 表单输入实时自动保存(500ms 防抖):重新打开页面可恢复;模型选择单独持久化到 last_models
   useEffect(() => {
@@ -198,17 +267,28 @@ export default function ProductImages() {
         adForm,
         mainModules,
         detailModules,
-        productImages: productImages.map(img => ({
+        mainImages: mainImages.map(img => ({
+          path: img.path, name: img.name, size: img.size, dataUrl: img.dataUrl
+        })),
+        detailImages: detailImages.map(img => ({
+          path: img.path, name: img.name, size: img.size, dataUrl: img.dataUrl
+        })),
+        adImages: adImages.map(img => ({
           path: img.path, name: img.name, size: img.size, dataUrl: img.dataUrl
         }))
       }).catch(() => {})
     }, 500)
     return () => clearTimeout(timer)
-  }, [mainForm, detailForm, adForm, mainModules, detailModules, productImages, activeTab, adType])
+  }, [mainForm, detailForm, adForm, mainModules, detailModules, mainImages, detailImages, adImages, activeTab, adType])
 
   /** 刷新按钮:重置表单(清空输入),但保留文案模型/生图模型为上次使用的 */
-  const handleResetForm = async () => {
-    if (!window.confirm('确定要重置当前表单吗？输入的内容将清空（文案模型和生图模型会保留上次使用的）。')) return
+  const handleResetForm = () => {
+    setResetConfirmOpen(true)
+  }
+
+  /** 执行重置(确认后) */
+  const doResetForm = async () => {
+    cropWarnedRef.current = {}
     let lastModels: any = {}
     try {
       const raw = await window.api.settings.get('last_models')
@@ -221,13 +301,23 @@ export default function ProductImages() {
     setAdForm({ ...emptyAdForm, textModel: lastModels.ad?.textModel || '', imageModel: lastModels.ad?.imageModel || '' })
     setMainModules(Object.fromEntries(MAIN_MODULE_TYPES.map(m => [m.key, 1])))
     setDetailModules(Object.fromEntries(DETAIL_MODULE_TYPES.map(m => [m.key, 1])))
-    setProductImages([])
+    setMainImages([])
+    setDetailImages([])
+    setAdImages([])
     // 清空已保存的临时状态,避免下次打开恢复旧值
     try { await window.api.files.saveTempState('productImages', {}) } catch {}
   }
 
   // 错误弹窗(模型校验 / 分析失败 / 模型不支持识图等)
   const [errorModal, setErrorModal] = useState<{ title?: string; message: string } | null>(null)
+  // 刷新(重置表单)确认弹窗
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
+  // 参考图比例提醒弹窗 + 手动裁剪(编辑模式模型输出跟随参考图)
+  const [cropWarnOpen, setCropWarnOpen] = useState(false)
+  const [cropModalOpen, setCropModalOpen] = useState(false)
+  const [cropWarnSize, setCropWarnSize] = useState('')
+  // 防重复提醒:key = 模型|尺寸|图片标识
+  const cropWarnedRef = useRef<Record<string, boolean>>({})
 
   const handleAiWrite = (target: 'main' | 'detail' | 'ad') => {
     // 模型必选校验:AI 帮写需要文案模型
@@ -240,18 +330,20 @@ export default function ProductImages() {
     setAiModalOpen(true)
   }
 
+  // 按当前 Tab 取对应表单内容(不能按 aiModalTarget:它只在打开 AI 帮写时更新,
+  // 直接点分析时可能残留上次的 tab,导致主图/详情图/广告图表单内容串用)
   const getCurrentProductInfo = (): string => {
-    if (aiModalTarget === 'main') return mainForm.description
-    if (aiModalTarget === 'detail') return detailForm.requirement
+    if (activeTab === '主图') return mainForm.description
+    if (activeTab === '详情图') return detailForm.requirement
     return adForm.description
   }
 
   const handleSelectImages = (files: UploadedFile[]) => {
-    setProductImages(prev => [...prev, ...files])
+    setCurrentImages(prev => [...prev, ...files])
   }
 
   const handleRemoveImage = (index: number) => {
-    setProductImages(prev => prev.filter((_, i) => i !== index))
+    setCurrentImages(prev => prev.filter((_, i) => i !== index))
   }
 
   const handleAiApply = (text: string) => {
@@ -292,7 +384,7 @@ export default function ProductImages() {
     try {
       // Convert blob URLs to base64 for IPC transport
       const imageUrls = await Promise.all(
-        productImages.map(img => {
+        currentImages.map(img => {
           return new Promise<string>((resolve, reject) => {
             const image = new Image()
             image.onload = () => {
@@ -323,7 +415,11 @@ export default function ProductImages() {
         projectId: project.id,
         images: imageUrls,
         description: info,
-        model: checkForm.textModel
+        model: checkForm.textModel,
+        // 广告图:把广告类型与目标语言传给分析,让 AI 按广告场景与语言生成专业设计方案
+        extra: activeTab === '广告图'
+          ? `广告类型：${adType}。目标语言：${{ zh: '中文', en: 'English', ja: '日本語' }[adForm.language] || '中文'}。请按该广告类型的专业设计规范生成广告图设计方案（电商广告：突出促销利益点、价格与购买冲动；社交媒体：突出吸睛话题与传播性；活动海报：突出大促氛围与醒目主视觉），每个方案包含主标题、副文案、利益点与明确的视觉焦点；画面中的标题与文案必须使用目标语言书写，文字简短完整、拼写正确。`
+          : undefined
       })
 
       // Get current tab's form data
@@ -367,7 +463,7 @@ export default function ProductImages() {
       setAnalyzeError(msg)
       setErrorModal({
         title: '产品分析失败',
-        message: `${msg}\n\n如果模型不支持图片识别（识图），请更换「文案模型」后重试。`
+        message: buildAiErrorMessage(msg, '分析失败，请重试', 'text')
       })
     } finally {
       setIsAnalyzing(false)
@@ -479,9 +575,9 @@ export default function ProductImages() {
               color: 'var(--fg-secondary)',
               marginBottom: '8px'
             }}>产品图</label>
-            {productImages.length > 0 ? (
+            {currentImages.length > 0 ? (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
-                {productImages.map((img, i) => (
+                {currentImages.map((img, i) => (
                   <div key={i} style={{
                     position: 'relative',
                     width: '72px',
@@ -545,7 +641,7 @@ export default function ProductImages() {
               </div>
             ) : null}
             <UploadArea
-              count={productImages.length}
+              count={currentImages.length}
               maxCount={6}
               label="上传产品图片"
               onUpload={handleSelectImages}
@@ -603,7 +699,7 @@ export default function ProductImages() {
                 <div style={{ position: 'relative' }}>
                   <Textarea
                     value={mainForm.description}
-                    onChange={(v) => setMainForm((f) => ({ ...f, description: v }))}
+                    onChange={(e) => setMainForm((f) => ({ ...f, description: e.target.value }))}
                     placeholder="建议输入：产品名称、卖点、目标人群、目标电商平台、图片风格等"
                     rows={3}
                   />
@@ -729,7 +825,7 @@ export default function ProductImages() {
                 <div style={{ position: 'relative' }}>
                   <Textarea
                     value={detailForm.requirement}
-                    onChange={(v) => setDetailForm((f) => ({ ...f, requirement: v }))}
+                    onChange={(e) => setDetailForm((f) => ({ ...f, requirement: e.target.value }))}
                     placeholder="建议输入：产品名称、卖点、目标人群、目标电商平台、图片风格等"
                     rows={3}
                   />
@@ -854,7 +950,7 @@ export default function ProductImages() {
                 <div style={{ position: 'relative' }}>
                   <Textarea
                     value={adForm.description}
-                    onChange={(v) => setAdForm((f) => ({ ...f, description: v }))}
+                    onChange={(e) => setAdForm((f) => ({ ...f, description: e.target.value }))}
                     placeholder="建议输入：产品名称、卖点、目标人群、活动主题、价格优惠、希望突出的氛围等"
                     rows={3}
                   />
@@ -942,7 +1038,7 @@ export default function ProductImages() {
                   />
                 </div>
               </div>
-              <Button variant="primary" onClick={handleAnalyze} style={{
+              <Button variant="primary" onClick={handleAnalyze} disabled={isAnalyzing} style={{
                 width: '100%',
                 marginTop: '4px',
                 display: 'flex',
@@ -950,8 +1046,8 @@ export default function ProductImages() {
                 justifyContent: 'center',
                 gap: '8px'
               }}>
-                <Zap size={16} />
-                生成广告图
+                <Wand2 size={16} />
+                {isAnalyzing ? '分析中...' : '分析产品'}
               </Button>
             </div>
           )}
@@ -1052,15 +1148,77 @@ export default function ProductImages() {
         open={aiModalOpen}
         onClose={() => setAiModalOpen(false)}
         onApply={handleAiApply}
-        productImages={productImages.map(img => img.dataUrl)}
+        productImages={currentImages.map(img => img.dataUrl)}
         productInfo={getCurrentProductInfo()}
-        context={currentAiPlatformLabel ? `目标平台：${currentAiPlatformLabel}` : ''}
+        context={[
+          aiModalTarget === 'ad' ? '' : currentAiPlatformLabel,
+          aiModalTarget === 'ad' ? `广告类型：${adType}` : ''
+        ].filter(Boolean).join('；')}
         // 按 AI 帮写目标取对应 Tab 的文案模型(主图/详情图/广告图各自独立)
         selectedModel={
           aiModalTarget === 'main' ? mainForm.textModel
             : aiModalTarget === 'detail' ? detailForm.textModel
             : adForm.textModel
         }
+      />
+
+      {/* 参考图比例提醒弹窗:编辑模式模型输出跟随参考图,提示用户裁剪 */}
+      {cropWarnOpen && (
+        <Modal
+          open
+          onClose={() => setCropWarnOpen(false)}
+          title="参考图比例与所选尺寸不一致"
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setCropWarnOpen(false)}>
+                暂不处理
+              </Button>
+              <Button variant="primary" onClick={() => {
+                setCropWarnOpen(false)
+                setCropModalOpen(true)
+              }}>
+                去裁剪
+              </Button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+            <AlertCircle size={20} style={{ color: '#b45309', flexShrink: 0, marginTop: '2px' }} />
+            <p style={{ margin: 0, fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
+              当前生图模型（编辑模式）会按参考图尺寸输出。参考图比例与所选尺寸 <strong>{cropWarnSize}</strong> 不一致，
+              直接生成的结果比例可能不符。建议先裁剪参考图到目标比例。
+            </p>
+          </div>
+        </Modal>
+      )}
+
+      {/* 手动裁剪弹窗:裁剪后自动替换已上传的参考图 */}
+      <CropModal
+        open={cropModalOpen}
+        image={currentImages.find(img => img.dataUrl)?.dataUrl || ''}
+        size={cropWarnSize}
+        onConfirm={(cropped) => {
+          setCropModalOpen(false)
+          // 裁剪结果自动替换上传列表中的第一张参考图(即"自动上传处理好的图片")
+          setCurrentImages(prev => prev.map((img, i) =>
+            i === 0 && img.dataUrl ? { ...img, dataUrl: cropped } : img
+          ))
+        }}
+        onCancel={() => setCropModalOpen(false)}
+      />
+
+      {/* 刷新(重置表单)确认弹窗 */}
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        title="重置表单"
+        message="确定要重置当前表单吗？输入的内容将清空（文案模型和生图模型会保留上次使用的）。"
+        confirmText="确定重置"
+        cancelText="取消"
+        onConfirm={() => {
+          setResetConfirmOpen(false)
+          doResetForm()
+        }}
+        onCancel={() => setResetConfirmOpen(false)}
       />
 
       {errorModal && (

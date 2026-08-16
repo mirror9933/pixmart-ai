@@ -3,6 +3,7 @@ import { Sparkles, Loader2, AlertCircle } from 'lucide-react'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Textarea } from '../ui/Textarea'
+import { ConfirmDialog } from './ConfirmDialog'
 
 /** Convert a blob:// or file path to a base64 data URL via canvas */
 function toBase64DataUrl(src: string): Promise<string> {
@@ -37,6 +38,8 @@ export function AiWriteModal({ open, onClose, onApply, productImages, productInf
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [customPrompt, setCustomPrompt] = useState('')
+  // 未上传参考图确认弹窗
+  const [noImgConfirm, setNoImgConfirm] = useState(false)
 
   const handleCustomGenerate = async () => {
     if (!customPrompt.trim()) return
@@ -45,6 +48,16 @@ export function AiWriteModal({ open, onClose, onApply, productImages, productInf
       setError('请先在「文案模型」中选择一个模型，再使用 AI 帮写')
       return
     }
+    // 未上传参考图:弹出主题确认弹窗,由用户决定是否仅凭文字描述继续生成
+    if (!productImages || productImages.length === 0) {
+      setNoImgConfirm(true)
+      return
+    }
+    doGenerate()
+  }
+
+  /** 实际执行生成(已通过参考图确认) */
+  const doGenerate = async () => {
     setError('')
     setLoading(true)
 
@@ -91,9 +104,10 @@ export function AiWriteModal({ open, onClose, onApply, productImages, productInf
   }
 
   return (
-    <Modal
-      open={open}
-      onClose={handleClose}
+    <>
+      <Modal
+        open={open}
+        onClose={handleClose}
       title="AI 写作助手"
       footer={
         <>
@@ -208,7 +222,22 @@ export function AiWriteModal({ open, onClose, onApply, productImages, productInf
           </div>
         )}
       </div>
-    </Modal>
+      </Modal>
+
+      {/* 未上传参考图确认弹窗 */}
+      <ConfirmDialog
+        open={noImgConfirm}
+        title="未上传参考图"
+        message="尚未上传产品参考图，AI 无法识别产品图片，将仅凭文字描述生成，结果可能不准确。仍要继续吗？"
+        confirmText="仍要生成"
+        cancelText="取消"
+        onConfirm={() => {
+          setNoImgConfirm(false)
+          doGenerate()
+        }}
+        onCancel={() => setNoImgConfirm(false)}
+      />
+    </>
   )
 }
 

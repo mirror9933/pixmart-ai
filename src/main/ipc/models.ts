@@ -18,6 +18,16 @@ interface ModelConfigRow {
   updated_at: string
 }
 
+/** 安全解析 JSON 列 */
+function parseJsonField(raw: unknown, fallback: unknown): any {
+  if (typeof raw !== 'string' || !raw || raw === 'undefined') return fallback
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return fallback
+  }
+}
+
 function parseModelConfig(row: ModelConfigRow) {
   let models: string[] = []
   try {
@@ -32,6 +42,10 @@ function parseModelConfig(row: ModelConfigRow) {
     vendorLabel: row.vendor_label,
     name: row.vendor_label,
     protocol: (row as any).protocol || 'openai',
+    orgId: (row as any).org_id || '',
+    headers: parseJsonField((row as any).headers, {}) as Record<string, string>,
+    timeout: Number((row as any).timeout || 0),
+    modelMeta: parseJsonField((row as any).model_meta, {}) as Record<string, any>,
     apiKey: row.api_key,
     baseUrl: row.base_url,
     status: row.status,
@@ -71,6 +85,10 @@ export function registerModelsHandlers(): void {
     apiKey: string
     baseUrl?: string
     protocol?: string
+    orgId?: string
+    headers?: Record<string, string>
+    timeout?: number
+    modelMeta?: Record<string, unknown>
   }) => {
     try {
       const db = getDb()
@@ -78,8 +96,8 @@ export function registerModelsHandlers(): void {
       const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
 
       db.run(`
-        INSERT INTO model_configs (id, vendor, vendor_label, api_key, base_url, protocol, status, latency, models, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO model_configs (id, vendor, vendor_label, api_key, base_url, protocol, org_id, headers, timeout, model_meta, status, latency, models, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         id,
         data.vendor,
@@ -87,6 +105,10 @@ export function registerModelsHandlers(): void {
         data.api_key || data.apiKey || '',
         data.baseUrl || '',
         data.protocol || 'openai',
+        data.orgId || '',
+        JSON.stringify(data.headers || {}),
+        Number(data.timeout || 0),
+        JSON.stringify(data.modelMeta || {}),
         'untested',
         0,
         JSON.stringify([]),
@@ -129,18 +151,30 @@ export function registerModelsHandlers(): void {
         apiKey: 'api_key',
         baseUrl: 'base_url',
         protocol: 'protocol',
+        orgId: 'org_id',
+        timeout: 'timeout',
         status: 'status',
         latency: 'latency',
         testedAt: 'tested_at'
+      }
+
+      const jsonFields: Record<string, string> = {
+        headers: 'headers',
+        modelMeta: 'model_meta'
       }
 
       const updates: string[] = []
       const values: unknown[] = []
 
       for (const [key, value] of Object.entries(data)) {
+        // 忽略 undefined 值(前端对非自定义厂商会传 protocol: undefined 等)
+        if (value === undefined) continue
         if (key === 'models') {
           updates.push('models = ?')
           values.push(JSON.stringify(value))
+        } else if (jsonFields[key]) {
+          updates.push(`${jsonFields[key]} = ?`)
+          values.push(JSON.stringify(value || {}))
         } else if (fieldMap[key]) {
           updates.push(`${fieldMap[key]} = ?`)
           values.push(value)
@@ -208,6 +242,10 @@ export function registerModelsHandlers(): void {
 
       const config = {
         ...row,
+        org_id: String((row as any).org_id || ''),
+        headers: parseJsonField((row as any).headers, {}) as Record<string, string>,
+        timeout: Number((row as any).timeout || 0),
+        model_meta: parseJsonField((row as any).model_meta, {}) as Record<string, any>,
         models: testModels
       }
 
@@ -240,13 +278,14 @@ export function registerModelsHandlers(): void {
       if (result.success) {
         logger.info(`Connection test passed: vendor=${row.vendor} latency=${result.latency}ms`)
       } else {
-        logger.warn(`Connection test failed: vendor=${row.vendor} latency=${result.latency}ms`)
+        logger.warn(`Connection test failed: vendor=${row.vendor} latency=${result.latency}ms error=${result.error || 'unknown'}`)
       }
       notifyClients()
 
       return {
         success: result.success,
-        latency: result.latency
+        latency: result.latency,
+        error: result.error || ''
       }
     } catch (error: any) {
       const status = error?.status || error?.code || ''
@@ -269,7 +308,7 @@ export function registerModelsHandlers(): void {
     }
   })
 
-  ipcMain.handle('models:fetchModels', async (_event, id: string) => {
+  ipcMain.handle('models:fetchModels', async (_event, id: string, opts?: { persist?: boolean }) => {
     try {
       const db = getDb()
       const stmt = db.prepare('SELECT * FROM model_configs WHERE id = ?')
@@ -290,6 +329,10 @@ export function registerModelsHandlers(): void {
 
       const config = {
         ...row,
+        org_id: String((row as any).org_id || ''),
+        headers: parseJsonField((row as any).headers, {}) as Record<string, string>,
+        timeout: Number((row as any).timeout || 0),
+        model_meta: parseJsonField((row as any).model_meta, {}) as Record<string, any>,
         models: fetchModels_list
       }
 
@@ -297,14 +340,22 @@ export function registerModelsHandlers(): void {
       const provider = createProvider(config)
       const models = await provider.fetchModels()
 
-      const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
-      db.run(`
-        UPDATE model_configs SET models = ?, updated_at = ? WHERE id = ?
-      `, [JSON.stringify(models), now, id])
+      // models 列保持纯 id 数组（模型元数据存 model_meta 列），仅返回给前端完整 ModelInfo 列表
+      const modelIds = (models as any[]).map((m) => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
 
-      saveDatabase()
-      logger.info(`Models fetched: vendor=${row.vendor} count=${models.length}`)
-      notifyClients()
+      // 编辑模式(persist=false)不覆盖数据库中已保存的模型列表,最终以「保存修改」为准
+      if (opts?.persist !== false) {
+        const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
+        db.run(`
+          UPDATE model_configs SET models = ?, updated_at = ? WHERE id = ?
+        `, [JSON.stringify(modelIds), now, id])
+
+        saveDatabase()
+        logger.info(`Models fetched: vendor=${row.vendor} count=${models.length}`)
+        notifyClients()
+      } else {
+        logger.info(`Models fetched (no persist): vendor=${row.vendor} count=${models.length}`)
+      }
 
       return models
     } catch (error) {

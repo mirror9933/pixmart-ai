@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
-import { getDb } from '../database'
+import { getDb, saveDatabase } from '../database'
 import { logger } from '../utils/logger'
-import { createProvider, type ModelConfig } from '../services/ai-provider'
+import { createProvider, type ModelConfig, type AIProvider } from '../services/ai-provider'
 import type { ChatContentPart } from '../services/ai-provider'
 import { taskQueue } from '../services/task-queue'
 import { checkSizeSupported } from '../services/size-capabilities'
@@ -60,6 +60,10 @@ function getActiveProvider() {
     api_key: apiKey,
     base_url: baseUrl,
     protocol: String((row as any).protocol || 'openai'),
+    org_id: String((row as any).org_id || ''),
+    headers: parseJsonField((row as any).headers, {}),
+    timeout: Number((row as any).timeout || 0),
+    model_meta: parseJsonField((row as any).model_meta, {}),
     status: (row.status as string) || '',
     latency: (row.latency as number) || 0,
     tested_at: (row.tested_at as string) || null,
@@ -67,6 +71,16 @@ function getActiveProvider() {
   }
 
   return createProvider(config)
+}
+
+/** 安全解析 JSON 列 */
+function parseJsonField(raw: unknown, fallback: unknown): any {
+  if (typeof raw !== 'string' || !raw || raw === 'undefined') return fallback
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return fallback
+  }
 }
 
 function getProviderByModel(model?: string): AIProvider {
@@ -122,6 +136,10 @@ function createProviderFromRow(row: any, preferredModel?: string): AIProvider {
     api_key: apiKey,
     base_url: baseUrl,
     protocol: String((row as any).protocol || 'openai'),
+    org_id: String((row as any).org_id || ''),
+    headers: parseJsonField((row as any).headers, {}),
+    timeout: Number((row as any).timeout || 0),
+    model_meta: parseJsonField((row as any).model_meta, {}),
     status: (row.status as string) || '',
     latency: (row.latency as number) || 0,
     tested_at: (row.tested_at as string) || null,
@@ -180,6 +198,8 @@ export function registerAIHandlers(): void {
       style?: string
       size?: string
       quality?: string
+      /** 该 prompt 专属参考图(覆盖全局 referenceImages,用于白底图等逐张独立生成场景) */
+      referenceImages?: string[]
     }>
     modelConfigId?: string
     model?: string
@@ -189,6 +209,8 @@ export function registerAIHandlers(): void {
     productProfile?: string
     productProfileEn?: string
     extraPrompt?: string
+    /** 是否允许裁剪参考图到目标比例(默认 true) */
+    cropRefs?: boolean
   }) => {
     try {
       const provider = data.model
@@ -206,11 +228,15 @@ export function registerAIHandlers(): void {
       // 有风格参考图时明确区分：前 N 张为风格图（样式参考），其余为产品主体图（外观必须一致）
       const styleCount = (data.styleImages || []).filter(r => r && r.startsWith('data:image/')).length
       const identityConstraint = styleCount > 0
-        ? `IMPORTANT - MAINTAIN EXACT PRODUCT IDENTITY: The FIRST ${styleCount} image(s) are STYLE references - follow their colors, layout, typography, background, decorative elements and overall design style. The product subject in the image must look IDENTICAL to the product image(s) that follow (shape, structure, colors, materials, surface details, logos, packaging). You may enhance sharpness and resolution, and adjust lighting, composition and overall style, but you MUST NOT alter, replace, redesign or restyle the product itself.`
-        : `IMPORTANT - MAINTAIN EXACT PRODUCT IDENTITY: The product subject in the image must look IDENTICAL to the reference product image(s) provided (shape, structure, colors, materials, surface details, logos, packaging). You may enhance sharpness and resolution, change the background and scene, and adjust lighting, composition and overall style, but you MUST NOT alter, replace, redesign or restyle the product itself.`
+        ? `IMPORTANT - MAINTAIN EXACT PRODUCT IDENTITY: The FIRST ${styleCount} image(s) are STYLE references - follow their colors, layout, typography, background, decorative elements and overall design style. The product subject in the image must look IDENTICAL to the product image(s) that follow (shape, structure, colors, materials, surface details, logos, packaging). You may enhance sharpness and resolution, and adjust lighting, composition and overall style, but you MUST NOT alter, replace, redesign or restyle the product itself. PACKAGING TEXT: All text printed on the product's own packaging, label, box or bottle (brand name, product name, spec, ingredients, barcode area etc.) is part of the product itself and must be preserved EXACTLY as in the reference image - identical characters, identical wording and layout. NEVER rewrite, translate, replace, redesign, omit or invent packaging text.`
+        : `IMPORTANT - MAINTAIN EXACT PRODUCT IDENTITY: The product subject in the image must look IDENTICAL to the reference product image(s) provided (shape, structure, colors, materials, surface details, logos, packaging). You may enhance sharpness and resolution, change the background and scene, and adjust lighting, composition and overall style, but you MUST NOT alter, replace, redesign or restyle the product itself. PACKAGING TEXT: All text printed on the product's own packaging, label, box or bottle (brand name, product name, spec, ingredients, barcode area etc.) is part of the product itself and must be preserved EXACTLY as in the reference image - identical characters, identical wording and layout. NEVER rewrite, translate, replace, redesign, omit or invent packaging text.`
+
+      // 摄影质感指令:解决生成图"像贴图/3D渲染"问题(材质平面、纹理重复、光影生硬、产品与场景割裂)
+      const photographyStyle = `PHOTOGRAPHY STYLE: Professional commercial product photography, photorealistic, shot on a full-frame camera with 85mm lens, soft diffused studio lighting with natural falloff, realistic material response (accurate metal highlights and reflections, matte surface diffusion, subtle natural surface texture variation - never repeating patterns), shallow depth of field, high dynamic range. UNIFIED LIGHTING AND BLENDING (CRITICAL): The product must be illuminated by the SAME light source as the scene - identical light direction and identical color temperature (warm scene = warm light on product, cool scene = cool light); the product surface must reflect ambient colors of the background (ambient color spill); the contact shadow under the product must be a soft gradient with natural falloff, NEVER hard-edged; product and background must share the same depth of field and focus plane; the product must have a believable spatial relationship with surrounding objects (natural occlusion, consistent scale); subtle ambient occlusion where the product touches the surface. The product must look photographed in the same frame and same exposure as the scene - NEVER cutout-pasted, NEVER floating, NEVER sticker-like composited look. TEXT RENDERING: Any text drawn in the image must be rendered horizontally straight and upright, perfectly legible with clean strokes, NO distortion, NO warping, NO curved or circular text arrangement, NO perspective-tilted text, NO artistic font deformation, NO typos or garbled characters; keep any text very short (max 4-8 Chinese characters per line or 2-6 English words), avoid long sentences.`
 
       const consistencyPrefix = [
         identityConstraint,
+        photographyStyle,
         // 优先用英文主体描述（生图模型对英文理解更准），无英文时回退中文
         (data.productProfileEn || data.productProfile) ? `\nProduct visual profile: ${data.productProfileEn || data.productProfile}` : '',
         data.extraPrompt?.trim() ? `\nUser supplementary requirements: ${data.extraPrompt.trim()}` : ''
@@ -238,8 +264,9 @@ export function registerAIHandlers(): void {
               size: item.size,
               quality: item.quality,
               style: item.style,
-              referenceImages: data.referenceImages,
-              styleImages: data.styleImages
+              referenceImages: item.referenceImages || data.referenceImages,
+              styleImages: data.styleImages,
+              cropRefs: data.cropRefs !== false
             })
             logger.info(`Image generated: task=${item.id} url=${result.url ? 'success' : 'no url'}`)
             return result
@@ -364,6 +391,47 @@ export function registerAIHandlers(): void {
         }
       }
 
+      // 广告图场景:context 含"广告类型"时,使用广告专用文案模板(与详情页文案区分)
+      const isAd = (data.context || '').includes('广告类型')
+
+      const adDescriptionPrompt = `【重要】你是一名资深的电商广告文案策划。请先仔细观察所有产品图片，分析产品外观、材质、颜色、设计细节、包装等视觉元素，然后结合以下信息，为广告图撰写一套完整、可直接使用的广告文案。
+
+=== 产品信息 ===
+${data.productInfo || '无'}
+
+=== 广告类型/平台 ===
+${data.context || '电商广告'}
+
+=== 风格要求 ===
+${data.style || '专业电商风格'}
+
+请严格按照以下 Markdown 格式输出，用图片观察到的实际细节填充（不要编造看不到的内容）：
+
+---
+
+**广告类型：** [电商广告 / 社交媒体 / 活动海报]
+
+**主标题：** [8-15字，制造好奇或紧迫感，突出最核心利益点，如"限时半价，错过再等一年"]
+
+**副标题：** [一句补充卖点或使用场景，15-30字]
+
+**广告正文（3-5条利益点）：**
+- [利益点1：具体、可感知，优先用数字、对比或场景化表达]
+- [利益点2]
+- [利益点3]
+
+**行动号召 CTA：** [2-8字短句，如"立即抢购""点击了解""扫码领券"，明确、有紧迫感]
+
+**适用人群：** [2-3类目标人群，结合使用场景]
+
+**画面文字建议：** [用于广告图画面中的醒目文字：主标题2-6个词（中文4-10字）+ 副标语1行，简短完整、无乱码风险；如涉及价格/优惠请写出具体数字]
+
+**主题配色：** [主色调] [色号] / [辅助色] [色号] / [点缀色] [色号]（贴合广告氛围：电商广告促销红黄、社交媒体时尚明亮、活动海报节日感强）
+
+---
+
+注意：1) 内容必须围绕产品真实卖点，结合图片观察，不编造看不到的内容；2) 按广告类型调整语气与重点：电商广告强调促销利益与价格优惠、社交媒体强调话题感与分享欲、活动海报强调氛围与视觉冲击；3) 文字默认使用中文（若产品信息为其他语言则跟随该语言）。`
+
       const prompts: Record<string, string> = {
         title: `请为以下产品生成15-30字的吸引眼球的标题。请仔细观察产品图片中的视觉特征。
 
@@ -378,7 +446,7 @@ ${data.context || '未明确'}
 
 只输出标题文本，不要解释。`,
 
-        description: `【重要】请先仔细观察所有产品图片，分析图片中的产品外观、材质、颜色、设计细节、包装等视觉元素，然后结合以下信息生成文案。
+        description: isAd ? adDescriptionPrompt : `【重要】请先仔细观察所有产品图片，分析图片中的产品外观、材质、颜色、设计细节、包装等视觉元素，然后结合以下信息生成文案。
 
 === 产品信息 ===
 ${data.productInfo || '无'}
@@ -435,7 +503,6 @@ ${data.context || '电商平台'}
 
 只输出关键词列表，用逗号分隔。`
       }
-
       const prompt = prompts[data.type]
       if (!prompt) throw new Error(`Unknown write type: ${data.type}`)
 

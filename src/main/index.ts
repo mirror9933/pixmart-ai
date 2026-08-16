@@ -96,6 +96,8 @@ function registerAllHandlers(): void {
   registerPathsHandlers()
   registerBackupHandlers()
   registerUpdaterHandlers()
+  // 真实版本号(来自打包后的 app,跟随 package.json version)
+  ipcMain.handle('app:getVersion', () => app.getVersion())
   startAutoBackup()
   logger.info('All IPC handlers registered')
 }

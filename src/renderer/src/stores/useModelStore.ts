@@ -14,8 +14,8 @@ interface ModelState {
   addConfig: (data: Partial<ModelConfig>) => Promise<ModelConfig>
   updateConfig: (id: string, data: Partial<ModelConfig>) => Promise<void>
   deleteConfig: (id: string) => Promise<void>
-  testConnection: (id: string) => Promise<{ success: boolean; latency: number }>
-  fetchModels: (id: string) => Promise<ModelInfo[]>
+  testConnection: (id: string) => Promise<{ success: boolean; latency: number; error?: string }>
+  fetchModels: (id: string, opts?: { persist?: boolean }) => Promise<ModelInfo[]>
 }
 
 export const useModelStore = create<ModelState>((set, get) => ({
@@ -46,7 +46,28 @@ export const useModelStore = create<ModelState>((set, get) => ({
     const connected = modelConfigs.filter(c => c.status === 'connected' && c.models.length > 0)
     const options: Array<{ value: string; label: string }> = []
     const seen = new Set<string>()
-    const isImageModel = (id: string) => /dall-e|imagen|agnes-image|gemini.*image/i.test(id)
+    const isImageModel = (id: string) => /dall-e|imagen|agnes-image|gemini.*image|gpt-image|qwen-image|flux|kolors|seedream|stable|image|^wan|wanx|z-image|zimage|kling|vidu/i.test(id)
+    // 能力标注:标注为文本/图片理解的模型优先;标注为图片生成的排除
+    const capOf = (config: ModelConfig, model: string) => config.modelMeta?.[model]?.capability
+    const taggedModels = new Set<string>()
+    for (const config of connected) {
+      for (const model of config.models) {
+        const cap = capOf(config, model)
+        if (cap === 'text' || cap === 'vision') taggedModels.add(model)
+      }
+    }
+    if (taggedModels.size > 0) {
+      for (const config of connected) {
+        const vendorLabel = config.name || config.vendor
+        for (const model of config.models) {
+          if (!seen.has(model) && taggedModels.has(model)) {
+            seen.add(model)
+            options.push({ value: model, label: `${model} (${vendorLabel})` })
+          }
+        }
+      }
+      return options
+    }
     for (const config of connected) {
       const vendorLabel = config.name || config.vendor
       for (const model of config.models) {
@@ -64,7 +85,27 @@ export const useModelStore = create<ModelState>((set, get) => ({
     const connected = modelConfigs.filter(c => c.status === 'connected' && c.models.length > 0)
     const options: Array<{ value: string; label: string }> = []
     const seen = new Set<string>()
-    const isImageModel = (id: string) => /dall-e|imagen|agnes-image|gemini.*image/i.test(id)
+    const isImageModel = (id: string) => /dall-e|imagen|agnes-image|gemini.*image|gpt-image|qwen-image|flux|kolors|seedream|stable|image|^wan|wanx|z-image|zimage|kling|vidu/i.test(id)
+    // 能力标注:标注为图片生成的模型优先
+    const capOf = (config: ModelConfig, model: string) => config.modelMeta?.[model]?.capability
+    const taggedModels = new Set<string>()
+    for (const config of connected) {
+      for (const model of config.models) {
+        if (capOf(config, model) === 'image') taggedModels.add(model)
+      }
+    }
+    if (taggedModels.size > 0) {
+      for (const config of connected) {
+        const vendorLabel = config.name || config.vendor
+        for (const model of config.models) {
+          if (!seen.has(model) && taggedModels.has(model)) {
+            seen.add(model)
+            options.push({ value: model, label: `${model} (${vendorLabel})` })
+          }
+        }
+      }
+      return options
+    }
     for (const config of connected) {
       const vendorLabel = config.name || config.vendor
       for (const model of config.models) {
@@ -143,21 +184,27 @@ export const useModelStore = create<ModelState>((set, get) => ({
       return result
     } catch (error) {
       set({ error: (error as Error).message, loading: false })
-      return { success: false, latency: 0 }
+      return { success: false, latency: 0, error: (error as Error)?.message || '未知错误' }
     }
   },
 
-  fetchModels: async (id: string) => {
+  fetchModels: async (id: string, opts?: { persist?: boolean }) => {
     set({ loading: true, error: null })
     try {
-      const models = await window.api.models.fetchModels(id)
-      set((state) => ({
-        modelConfigs: state.modelConfigs.map(c =>
-          c.id === id ? { ...c, models } : c
-        ),
-        version: state.version + 1,
-        loading: false
-      }))
+      const models = await window.api.models.fetchModels(id, opts)
+      // persist=false(编辑模式预览):只返回列表,不改动本地配置的模型
+      if (opts?.persist !== false) {
+        const ids = (models as any[]).map((m) => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
+        set((state) => ({
+          modelConfigs: state.modelConfigs.map(c =>
+            c.id === id ? { ...c, models: ids } : c
+          ),
+          version: state.version + 1,
+          loading: false
+        }))
+      } else {
+        set({ loading: false })
+      }
       return models
     } catch (error) {
       set({ error: (error as Error).message, loading: false })

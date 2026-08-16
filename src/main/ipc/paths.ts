@@ -173,6 +173,21 @@ export function registerPathsHandlers(): void {
     }
   })
 
+  // 打开外部链接(仅允许 http/https,用于网盘下载等跳转)
+  ipcMain.handle('paths:openExternal', async (_event, url: string) => {
+    try {
+      if (!url || !/^https?:\/\//i.test(url)) {
+        return { success: false, error: '无效链接' }
+      }
+      await shell.openExternal(url)
+      logger.info(`Opened external url: ${url}`)
+      return { success: true }
+    } catch (error) {
+      logger.error('Failed to open external url:', error)
+      return { success: false, error: (error as Error).message }
+    }
+  })
+
   ipcMain.handle('paths:resetToDefault', async (_event, key: PathKey) => {
     try {
       const oldPath = getPathFromDb(key)

@@ -9,8 +9,10 @@ import Select from '@/components/ui/Select'
 import SearchableSelect from '@/components/ui/SearchableSelect'
 import Textarea from '@/components/ui/Textarea'
 import ErrorModal from '@/components/shared/ErrorModal'
+import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import UploadArea, { type UploadedFile } from '@/components/ui/UploadArea'
 import { useModelOptions } from '@/hooks/useModelOptions'
+import { buildAiErrorMessage } from '@/utils/aiError'
 
 export default function StyleReplication() {
   const navigate = useNavigate()
@@ -30,6 +32,8 @@ export default function StyleReplication() {
   const [replicateError, setReplicateError] = useState('')
   // 错误弹窗(模型校验 / 分析失败 / 模型不支持识图等)
   const [errorModal, setErrorModal] = useState<{ title?: string; message: string } | null>(null)
+  // 刷新(重置表单)确认弹窗
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
 
   // 挂载时恢复临时保存的表单/图片;模型默认用上次使用的(last_models.style)
   useEffect(() => {
@@ -62,6 +66,24 @@ export default function StyleReplication() {
           setForm((f) => ({ ...f, ...defaultModels }))
         }
       } catch {}
+      // 从图片编辑导入的图片(导出到本页):合并进产品图列表
+      try {
+        const raw = sessionStorage.getItem('pixmart-import-images')
+        if (raw) {
+          sessionStorage.removeItem('pixmart-import-images')
+          const data = JSON.parse(raw)
+          const urls: string[] = Array.isArray(data) ? data : data?.images
+          if (Array.isArray(urls) && urls.length > 0) {
+            const imported = urls.map((u, i) => ({
+              path: '',
+              name: `edited-${Date.now()}-${i + 1}.png`,
+              size: Math.round(u.length * 0.75),
+              dataUrl: u
+            }))
+            setProductImages(prev => [...prev, ...imported])
+          }
+        }
+      } catch {}
     })()
   }, [])
 
@@ -87,8 +109,12 @@ export default function StyleReplication() {
   }, [prompt, form, refImages, productImages])
 
   /** 刷新按钮:重置表单(清空输入),但保留文案模型/生图模型为上次使用的 */
-  const handleResetForm = async () => {
-    if (!window.confirm('确定要重置当前表单吗？输入的内容将清空（文案模型和生图模型会保留上次使用的）。')) return
+  const handleResetForm = () => {
+    setResetConfirmOpen(true)
+  }
+
+  /** 执行重置(确认后) */
+  const doResetForm = async () => {
     let lastModels: any = {}
     try {
       const raw = await window.api.settings.get('last_models')
@@ -217,7 +243,7 @@ export default function StyleReplication() {
       setReplicateError(msg)
       setErrorModal({
         title: '风格分析失败',
-        message: `${msg}\n\n如果模型不支持图片识别（识图），请更换「文案模型」后重试。`
+        message: buildAiErrorMessage(msg, '复刻失败，请重试', 'text')
       })
     } finally {
       setIsReplicating(false)
@@ -226,38 +252,6 @@ export default function StyleReplication() {
 
   return (
     <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
-      {/* 刷新按钮:重置表单(保留上次使用的模型) */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
-        <button
-          onClick={handleResetForm}
-          title="重置当前表单（保留上次使用的模型）"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px',
-            padding: '6px 12px',
-            borderRadius: 'var(--radius-md)',
-            fontSize: '12px',
-            fontWeight: 500,
-            color: 'var(--fg-muted)',
-            backgroundColor: 'transparent',
-            border: '1px solid var(--border)',
-            cursor: 'pointer',
-            transition: 'all 0.2s ease'
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.color = 'var(--brand)'
-            e.currentTarget.style.borderColor = 'var(--brand)'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.color = 'var(--fg-muted)'
-            e.currentTarget.style.borderColor = 'var(--border)'
-          }}
-        >
-          <RefreshCw size={13} />
-          刷新
-        </button>
-      </div>
       <div style={{ textAlign: 'center', marginBottom: '28px' }}>
         <h1 style={{
           fontSize: '28px',
@@ -290,7 +284,35 @@ export default function StyleReplication() {
             <span style={{ fontSize: '15px', fontWeight: 600, color: 'var(--fg)' }}>
               风格复刻设置
             </span>
-
+            <button
+              onClick={handleResetForm}
+              title="重置当前表单（保留上次使用的模型）"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '6px 12px',
+                borderRadius: 'var(--radius-md)',
+                fontSize: '12px',
+                fontWeight: 500,
+                color: 'var(--fg-muted)',
+                backgroundColor: 'transparent',
+                border: '1px solid var(--border)',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = 'var(--brand)'
+                e.currentTarget.style.borderColor = 'var(--brand)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = 'var(--fg-muted)'
+                e.currentTarget.style.borderColor = 'var(--border)'
+              }}
+            >
+              <RefreshCw size={13} />
+              刷新
+            </button>
           </div>
 
           <div style={{ marginBottom: '14px' }}>
@@ -343,7 +365,7 @@ export default function StyleReplication() {
             <label style={labelStyle}>补充提示词</label>
             <Textarea
               value={prompt}
-              onChange={setPrompt}
+              onChange={(e) => setPrompt(e.target.value)}
               placeholder="例如：添加「限时特惠」文字，使用红色主题.."
               rows={3}
             />
@@ -544,6 +566,20 @@ export default function StyleReplication() {
       </div>
 
       {/* 错误弹窗 */}
+      {/* 刷新(重置表单)确认弹窗 */}
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        title="重置表单"
+        message="确定要重置当前表单吗？输入的内容将清空（文案模型和生图模型会保留上次使用的）。"
+        confirmText="确定重置"
+        cancelText="取消"
+        onConfirm={() => {
+          setResetConfirmOpen(false)
+          doResetForm()
+        }}
+        onCancel={() => setResetConfirmOpen(false)}
+      />
+
       {errorModal && (
         <ErrorModal
           open

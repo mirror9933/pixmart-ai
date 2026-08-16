@@ -10,6 +10,7 @@ import Select from '@/components/ui/Select'
 import Modal from '@/components/ui/Modal'
 import ErrorModal from '@/components/shared/ErrorModal'
 import { MAIN_MODULE_TYPES } from '@/constants/mainModules'
+import { buildAiErrorMessage } from '@/utils/aiError'
 
 const designSections_default = [
   {
@@ -78,6 +79,33 @@ function getImageSize(url: string): Promise<{ w: number; h: number } | null> {
     img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
     img.onerror = () => resolve(null)
     img.src = url
+  })
+}
+
+/** 前端居中裁剪图片到目标比例(会裁掉画面边缘内容) */
+function cropImageToRatio(dataUrl: string, requested: string): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const m = requested.match(/^(\d+):(\d+)$/) || requested.match(/^(\d+)x(\d+)$/)
+      const target = m ? parseInt(m[1], 10) / parseInt(m[2], 10) : 1
+      const cur = img.naturalWidth / img.naturalHeight
+      let w = img.naturalWidth
+      let h = img.naturalHeight
+      if (cur > target) w = Math.round(h * target)
+      else h = Math.round(w / target)
+      const x = Math.round((img.naturalWidth - w) / 2)
+      const y = Math.round((img.naturalHeight - h) / 2)
+      const c = document.createElement('canvas')
+      c.width = w
+      c.height = h
+      const ctx = c.getContext('2d')
+      if (!ctx) { resolve(dataUrl); return }
+      ctx.drawImage(img, x, y, w, h, 0, 0, w, h)
+      resolve(c.toDataURL('image/jpeg', 0.92))
+    }
+    img.onerror = () => resolve(dataUrl)
+    img.src = dataUrl
   })
 }
 
@@ -185,12 +213,14 @@ export default function ConfirmPlan() {
         failedShownRef.current = true
         const errMsg = task.error || ''
         if (errMsg.startsWith('SIZE_NOT_SUPPORTED')) {
-          // 模型不支持当前尺寸:弹窗让用户选择是否按保底尺寸生成
-          setSizeFallback({ requested: pixelSize, fallback: fallbackSizeFor(pixelSize) })
+          // 模型不支持当前尺寸:弹窗让用户选择是否按保底尺寸生成,并展示模型支持的尺寸
+          const supportMatch = errMsg.match(/支持：(.+)$/)
+          const suggestions = supportMatch ? supportMatch[1].split(/[、,，]/).filter(Boolean) : undefined
+          setSizeFallback({ requested: pixelSize, fallback: fallbackSizeFor(pixelSize), suggestions })
         } else {
           setErrorModal({
             title: '图片生成失败',
-            message: `${errMsg}\n\n如果模型不支持图片生成，请更换「生图模型」后重试。`
+            message: buildAiErrorMessage(errMsg, '任务失败', 'image')
           })
         }
       }
@@ -294,7 +324,7 @@ export default function ConfirmPlan() {
   // 本次生成请求的尺寸(用于生成后校验实际输出)
   const lastRequestedSizeRef = useRef<string>('')
   // 尺寸不符弹窗(模型静默忽略尺寸时提示)与防重复标记
-  const [sizeMismatchModal, setSizeMismatchModal] = useState<{ requested: string; actualW: number; actualH: number } | null>(null)
+  const [sizeMismatchModal, setSizeMismatchModal] = useState<{ requested: string; actualW: number; actualH: number; suggestions?: string[]; taskId?: string } | null>(null)
   const sizeNotifiedRef = useRef(false)
 
   /** 生成完成后校验实际输出尺寸是否与请求一致(不依赖模型报错,能捕获模型静默忽略尺寸的情况) */
@@ -311,7 +341,13 @@ export default function ConfirmPlan() {
     ))
     if (!sizeNotifiedRef.current) {
       sizeNotifiedRef.current = true
-      setSizeMismatchModal({ requested, actualW: size.w, actualH: size.h })
+      // 查询该模型支持的尺寸列表,弹窗中一并展示
+      let suggestions: string[] | undefined
+      try {
+        const check = await window.api.ai.checkSize({ model: selectedImageModel, size: requested })
+        suggestions = check.suggestions
+      } catch {}
+      setSizeMismatchModal({ requested, actualW: size.w, actualH: size.h, suggestions, taskId: task.id })
     }
   }
 
@@ -371,7 +407,7 @@ export default function ConfirmPlan() {
       setGenerating(false)
       setErrorModal({
         title: '提交生成失败',
-        message: `${err?.message || '未知错误'}\n\n如果模型不支持图片生成，请更换「生图模型」后重试。`
+        message: buildAiErrorMessage(err?.message || '未知错误', '提交生成失败', 'image')
       })
     }
   }
@@ -380,6 +416,7 @@ export default function ConfirmPlan() {
 
   // 尺寸不支持弹窗:模型不支持用户所选尺寸时,让用户选择是否按保底尺寸生成
   const [sizeFallback, setSizeFallback] = useState<{ requested: string; fallback: string; suggestions?: string[] } | null>(null)
+
   const handleFallbackGenerate = () => {
     if (!sizeFallback) return
     const fb = sizeFallback.fallback
@@ -393,6 +430,27 @@ export default function ConfirmPlan() {
     const fb = fallbackSizeFor(sizeMismatchModal.requested)
     setSizeMismatchModal(null)
     generateWithSize(fb)
+  }
+
+  // 尺寸不符:同比例重新生成一次
+  const handleMismatchRetry = () => {
+    if (!sizeMismatchModal) return
+    const r = sizeMismatchModal.requested
+    setSizeMismatchModal(null)
+    generateWithSize(r)
+  }
+
+  // 尺寸不符:前端居中裁剪当前结果图到目标比例(会裁掉画面边缘内容)
+  const handleMismatchCrop = async () => {
+    if (!sizeMismatchModal) return
+    const { taskId, requested } = sizeMismatchModal
+    const task = generatedImages.find(t => t.id === taskId)
+    setSizeMismatchModal(null)
+    if (!task || !task.result?.url) return
+    const cropped = await cropImageToRatio(task.result.url, requested)
+    setGeneratedImages(prev => prev.map(t =>
+      t.id === taskId && t.result ? { ...t, result: { ...t.result, url: cropped } } : t
+    ))
   }
 
   // Initialize all plans selected on first render
@@ -752,7 +810,9 @@ export default function ConfirmPlan() {
                       正在生成图片...
                     </p>
                     <p style={{ fontSize: '13px', color: 'var(--fg-muted)', margin: '0 0 16px 0' }}>
-                      已完成 {generatedImages.length} / {taskIdsRef.current.length} 张
+                      {taskIdsRef.current.length > 0
+                        ? `已完成 ${generatedImages.length} / ${taskIdsRef.current.length} 张`
+                        : '正在准备生成...'}
                     </p>
                     <div style={{
                       maxWidth: '300px', width: '100%', height: '4px',
@@ -1138,8 +1198,9 @@ export default function ConfirmPlan() {
           title="生成尺寸与所选不一致"
           footer={
             <>
-              <Button variant="secondary" onClick={() => setSizeMismatchModal(null)}>忽略</Button>
-              <Button variant="primary" onClick={handleMismatchFallback}>按保底尺寸重试</Button>
+              <Button variant="ghost" onClick={() => setSizeMismatchModal(null)}>保留当前结果</Button>
+              <Button variant="secondary" onClick={handleMismatchRetry}>重新生成</Button>
+              <Button variant="primary" onClick={handleMismatchCrop}>居中裁剪到 {sizeMismatchModal.requested}</Button>
             </>
           }
         >
@@ -1149,8 +1210,15 @@ export default function ConfirmPlan() {
               <p style={{ margin: '0 0 8px', fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
                 模型未按所选尺寸生成：请求 <strong>{sizeMismatchModal.requested}</strong>，实际输出 <strong>{sizeMismatchModal.actualW}×{sizeMismatchModal.actualH}</strong>。
               </p>
-              <p style={{ margin: 0, fontSize: '13px', color: 'var(--fg)', lineHeight: '1.7' }}>
-                是否按保底尺寸重新生成？或保留当前结果继续。
+              {sizeMismatchModal.suggestions && sizeMismatchModal.suggestions.length > 0 && (
+                <p style={{ margin: '0 0 8px', fontSize: '12px', color: 'var(--fg-muted)', lineHeight: '1.7' }}>
+                  该模型支持：{sizeMismatchModal.suggestions.join('、')}
+                </p>
+              )}
+              <p style={{ margin: 0, fontSize: '12px', color: 'var(--fg-muted)', lineHeight: '1.7' }}>
+                · 重新生成：再试一次，该模型对比例的响应不稳定，可能仍不符；
+                <br />· 居中裁剪：将当前结果裁剪为 {sizeMismatchModal.requested}，会裁掉画面边缘内容；
+                <br />· 保留当前结果：原样使用（比例与所选不符）。
               </p>
             </div>
           </div>
