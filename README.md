@@ -1,22 +1,34 @@
 # PixMart AI
 
-AI 驱动的电商图片设计工作站 —— 上传产品图，一键生成商品详情图、广告图与风格复刻图。
+AI 驱动的电商图片设计工作站 —— 上传产品图，AI 一键生成主图、详情图、广告图，支持风格复刻、图片编辑与白底图生成。
 
-> **项目状态：开发完善中** —— 软件仍在持续迭代，功能与界面会陆续优化，欢迎反馈建议与问题。
-
-![软件界面预览](./docs/app-screenshot.png)
+> **项目状态：开发完善中** —— 软件仍在持续迭代，欢迎反馈建议与问题。
 
 ## 功能特性
 
-- **商品图生成**：基于产品图与描述，生成多方案电商图片
-- **风格复刻**：参考设计图，将目标风格应用到产品主体（保持产品外观不变）
-- **多方案规划**：AI 分析产出多套设计方案，确认后批量生成
-- **批量任务**：多商品、多方案批量生成
-- **模型配置**：支持官方厂商（OpenAI / Anthropic / Google AI / Agnes AI）与聚合中转（Ofox / OpenRouter / 自定义）
-  - 自定义接入支持 **OpenAI / Anthropic / Gemini** 三协议
-  - Ofox 的 Gemini 图像模型走原生协议，支持图生图、保持主体一致性
-- **项目管理**：项目记录、图片预览、打开目录、删除、批量选择
-- **主题**：深色 / 浅色主题
+### 全品类商品图
+- **主图生成**：首页图 / 痛点图 / 白底首图 / 细节图 / 全功能图 5 大模块，支持自定义模块与提示词覆盖
+- **详情图生成**：首屏主视觉、使用场景、氛围图、品牌故事、效果对比、工艺制作、系列展示、售后保障、核心卖点、多角度、细节特写、尺寸参数、配件赠品、成分、使用建议等 16 大模块
+- **广告图生成**：电商广告 / 社交媒体 / 活动海报 三种类型，按类型定制视觉设计与文案（主标题、副标题、CTA、促销元素）
+- **统一尺寸体系**：14 种主图/详情图尺寸 + 10 种广告尺寸，生成前自动校验模型尺寸能力
+- **产品一致性**：参考图保真（编辑模式自动裁剪到目标比例）、包装文字原样保留、摄影质感与光影融合指令
+
+### 风格复刻
+- 上传爆款参考设计图，AI 分析风格（色彩/排版/构图/装饰）并应用到您的产品主体
+
+### 其他功能
+- **图片编辑**：裁剪（自由/固定尺寸）、旋转、翻转、滤镜（亮度/对比度/饱和度/灰度/模糊）、导出到本地或各生成页面
+- **白底图生成**：一键生成纯白背景商品主图（单张，可导出到主图/详情图/广告图/风格复刻）
+
+### 模型管理
+- 支持 **14 家** AI 厂商：OpenAI、Anthropic、Google、OpenRouter、Ofox、Agnes、AIHubMix、SiliconFlow、火山方舟、阿里百炼、小米 MiMo、Kimi、MiniMax、自定义
+- 自定义接入支持 OpenAI / Anthropic / Gemini 三种协议
+- 模型测试连接、自动拉取模型列表、能力标注（文本/图片/理解）、尺寸能力表
+- 模型选择指南：文案模型需多模态识图、生图模型需图生图能力
+
+### 其他
+- 项目记录：图片预览、打开目录、删除、批量管理
+- 深色/浅色主题、在线更新（GitHub Releases）、数据自动备份、网盘下载
 
 ## 技术栈
 
@@ -25,32 +37,28 @@ AI 驱动的电商图片设计工作站 —— 上传产品图，一键生成商
 - Tailwind CSS + lucide-react
 - zustand 状态管理
 - sql.js（本地 SQLite 存储）
-- OpenAI SDK / Anthropic SDK
+- OpenAI SDK / Anthropic SDK / sharp
 
-## 开发
+### macOS 未签名安装方法
 
-```bash
-npm install
-npm run dev
-```
+**方法一（推荐，最直接）**：
+1. 从 dmg 把 `PixMart AI.app` 拖到「应用程序」文件夹
+2. 在 Finder 中右键 `PixMart AI.app` → 点「打开」
+3. 弹出"无法验证开发者"提示框时，点「打开」，应用就会启动
+4. 以后再启动直接双击即可
 
-数据存储于系统用户数据目录：
-- Windows：`%APPDATA%/pixmart-ai`
-- macOS：`~/Library/Application Support/pixmart-ai`
-
-## 打包
+**方法二（如果右键打开也不弹）**：在终端运行：
 
 ```bash
-# Windows（需在 Windows 上执行）
-npm run build:win
-
-# macOS（需在 macOS 上执行）
-npm run build:mac
+xattr -dr com.apple.quarantine "/Applications/PixMart AI.app"
 ```
 
-产物输出到 `dist/` 目录（Windows: NSIS 安装包；macOS: dmg + zip，含 arm64/x64）。
+这条命令移除系统的隔离标记，之后就能直接双击打开。
 
-> macOS 未签名包首次打开需右键 → 打开。正式分发请配置代码签名证书（移除 `electron-builder.yml` 中的 `identity: null`）。
+> 注意：不要双击 dmg 里的应用直接运行，必须先把 `.app` 复制到「应用程序」文件夹再操作，否则可能无效。
+
+## 下载与更新
+- 应用内「检查更新」支持在线更新；「网盘下载」提供国内夸克网盘
 
 ## 模型接入
 
@@ -58,8 +66,8 @@ npm run build:mac
 
 | 类型 | 厂商 | 说明 |
 |---|---|---|
-| 官方 | OpenAI / Anthropic / Google AI / Agnes AI | 各家官方 API |
-| 聚合 | Ofox / OpenRouter / 自定义 | 统一 Key 接入多模型 |
+| 官方 | OpenAI / Anthropic / Google / 火山方舟 / 阿里百炼 / MiMo / Kimi / MiniMax | 各家官方 API |
+| 聚合 | OpenRouter / Ofox / Agnes / AIHubMix / SiliconFlow | 统一 Key 接入多模型 |
 | 自定义 | 三协议可选 | OpenAI / Anthropic / Gemini 兼容端点 |
 
 ## License
