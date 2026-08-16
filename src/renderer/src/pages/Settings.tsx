@@ -45,9 +45,11 @@ const PATH_ICONS: Record<string, typeof FolderCog> = {
 type SidebarKey = (typeof sidebarItems)[number]['key']
 
 /** 网盘下载链接(安装包分享页/直链)。点击"网盘下载"弹窗确认后浏览器跳转 */
-const MIRROR_DOWNLOAD_URL = 'https://pan.quark.cn/s/bc5115bec115'
+const MIRROR_DOWNLOAD_URL = 'https://pan.quark.cn/s/2f8e2af763f5?pwd=7kG5'
+
 /** 网盘提取码(弹窗中告知用户) */
-const MIRROR_DOWNLOAD_CODE = 'aAD9'
+const MIRROR_DOWNLOAD_CODE = '7kG5'
+
 
 /** 厂商 logo(本地 SVG,离线可用;自定义厂商用图标占位) */
 const VENDOR_LOGOS: Record<string, string> = {
@@ -127,14 +129,6 @@ export default function Settings() {
     }
   }
 
-  const handleCopyWechat = async () => {
-    try {
-      await navigator.clipboard.writeText('lan89an89')
-      setWechatCopied(true)
-      setTimeout(() => setWechatCopied(false), 2000)
-    } catch {}
-  }
-
   // 监听主进程更新状态事件(检查/下载进度/下载完成等)
   useEffect(() => {
     const unsub = window.api.updater.onStatus((s: any) => {
@@ -197,6 +191,14 @@ export default function Settings() {
 
   const handleQuitAndInstall = () => {
     window.api.updater.quitAndInstall()
+  }
+
+  const handleCopyWechat = async () => {
+    try {
+      await navigator.clipboard.writeText('lan89an89')
+      setWechatCopied(true)
+      setTimeout(() => setWechatCopied(false), 2000)
+    } catch {}
   }
   const [showApiKey, setShowApiKey] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; latency: number } | null>(null)
@@ -2216,13 +2218,13 @@ export default function Settings() {
               .ver-holo__layer--front { opacity: 0.98; transform: translateZ(0px); -webkit-text-stroke: 1px color-mix(in srgb, var(--brand) 78%, transparent); }
             `}</style>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '24px', marginBottom: '24px', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <BrandLogo size={120} />
                 <HoloVersion text={`v${appVersion || '1.0.0'}`} />
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', gap: '24px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <UpdateButton
                     text={
                       updateState === 'checking' ? '检查中...'
@@ -2239,7 +2241,6 @@ export default function Settings() {
                         : handleCheckUpdate
                     }
                   />
-                  {/* 网盘下载:国内用户手动更新兜底(链接硬编码,点击浏览器跳转) */}
                   <UpdateButton text="网盘下载" onClick={handleOpenMirror} />
                   {updateState === 'downloaded' && updateVersion && (
                     <span style={{ fontSize: '12px', color: 'var(--fg-muted)' }}>
@@ -2247,7 +2248,6 @@ export default function Settings() {
                     </span>
                   )}
                 </div>
-                {/* 下载进度条 */}
                 {updateState === 'downloading' && (
                   <div style={{
                     width: '220px', height: '6px', borderRadius: '3px',
@@ -2849,7 +2849,7 @@ const iconBtnStyle: React.CSSProperties = {
   transition: 'all 0.15s'
 }
 
-/** 检查更新/下载更新按钮（uiverse wise-shrimp-26 动画样式，主题化配色） */
+/** 网盘下载按钮（uiverse wise-shrimp-26 动画样式，主题化配色） */
 function UpdateButton({ text, onClick }: { text: string; onClick?: () => void }) {
   return (
     <a
