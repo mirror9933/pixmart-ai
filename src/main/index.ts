@@ -46,7 +46,7 @@ function createWindow(): BrowserWindow {
     minHeight: 680,
     show: false,
     title: 'Pixmart AI',
-    icon: path.join(__dirname, '../renderer/icon-letter.svg'),
+    icon: path.join(__dirname, '../renderer/pixmart-logo.png'),
     webPreferences: {
       preload: preloadPath,
       nodeIntegration: false,
